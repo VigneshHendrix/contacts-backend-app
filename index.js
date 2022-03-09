@@ -24,14 +24,14 @@ app.use(cookieParser())
 //middleware which checks whether the incoming token is from the auth0 provider or not
 var jwtCheck = jwt({
     secret: jwks.expressJwtSecret({
-        cache: true,
-        rateLimit: true,
-        jwksRequestsPerMinute: 5,
-        jwksUri: 'https://dev-rh2hz-ym.us.auth0.com/.well-known/jwks.json'
+        cache: 
+        rateLimit: 
+        jwksRequestsPerMinute: 
+        jwksUri: 
   }),
-  audience: 'https://www.contacts-api.com',
-  issuer: 'https://dev-rh2hz-ym.us.auth0.com/',
-  algorithms: ['RS256']
+  audience: 
+  issuer: 
+  algorithms: 
 });
 
 app.use(jwtCheck);
