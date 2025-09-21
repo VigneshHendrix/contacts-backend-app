@@ -1,0 +1,3282 @@
+#import "ZCRMLookUpListViewController.h"
+#ifdef EXTN
+#else
+#import "ZCRMGenericParserResponse.h"
+#import "ZCRMGenericDataDownloader.h"
+#import "ZCRMDetailViewController.h"
+#import "ZCRMAppData.h"
+#import "ZCRMBaseDataDownloader.h"
+#import "ZCRMRelatedItemsDownloader.h"
+#import "ZCRMInventoryProductDetailViewController.h"
+#import "ZMAlertView.h"
+#import "ZCRMWorkerClass.h"
+#import "VTNetHeaders.h"
+#endif
+#import "ZCommonLoadingView.h"
+#import "ZCRMMetadata.h"
+#import "VTDBHeader.h"
+#import "ZMultiplePurposeTableViewCell.h"
+#import "VTSearchField.h"
+#import "ZCRMDetailControllerUtil.h"
+#import "ZCRMSettings.h"
+#import "ZCRMUIUtil.h"
+#import "ZCRMWorkerClass.h"
+
+#ifndef EXTN
+#import "ZCRMCommonUtils.h"
+#endif
+
+#import "VTNetUtil.h"
+
+#import "ZCRMSwiftHeader.h"
+
+#import "ZCRMAppData.h"
+#import "ZCRMFormLabel.h"
+@import AccessibilityConstant;
+
+#define startLeftPosition 85
+#define startRightPosition iPhoneWidth - 80
+
+#define intLeftPos 5
+#define intRightPos iPhoneWidth - 73
+
+#define finalLeftPosition 15
+#define finalRightPosition iPhoneWidth - 75
+
+#define TAG_NODATA_IMAGE 1000
+#define TAG_NODATA_LABEL 1001
+
+#define navBarHeight [((UIApplication*)APPLICATION) isStatusBarHidden] ? 44:64
+
+#define FooterViewPadding 10
+#define FooterViewMinHeight 70
+
+#ifdef EXTN
+#else
+@import CRMEvents;
+#endif
+
+@interface ZCRMLookUpListViewController ()<UISearchControllerDelegate, UISearchResultsUpdating, VTToastBarDelegate>
+{
+    NSArray *participantsList;
+    NSArray *initialSelectedEntityIdList;
+    NSString *quickCreateEntityID;
+    UIView *transparentView;
+    BOOL isSearchClicked;
+    UILabel *noResultsLabel;
+    NSMutableDictionary *participantDict;
+    BOOL isAlreadyLoaded;
+    BOOL isRelatedRecordsLinkReqd;
+    NSMutableArray *lookupList;
+    NSArray *cScriptSetCriteriaFilteredRecordIDs;
+#ifdef EXTN
+#else
+    ZMAlertView *alertView;
+#endif
+}
+@property (nonatomic,strong) UITableViewController *tbVController;
+@property (nonatomic, strong) UIBarButtonItem *selectButton;
+@property (nonatomic, strong) UILabel *noDataLabel;
+@property (nonatomic, strong) ZCRMFormLabel *tableFooterLabel;
+@property (nonatomic, strong) ZCRMFormLabel* searchFooterLabel;
+@property (nonatomic) BOOL isMoreUserDownloadInProgress;
+@property (nonatomic, strong) NSArray *lFCurrentSearchResults;
+@property (nonatomic, strong) NSArray *lFAllRecords; //Master list and the current search list
+@property (readonly) BOOL showLFFooter;
+@property (readonly) BOOL isUnsyncRecordsHandlingRequired;
+@property (nonatomic, strong) NSDictionary *lookupFilterCriteria;
+@property (nonatomic, strong) NSDictionary *childValues;
+@property (nonatomic, readonly) NSString *formattedChildValues;
+@property (nonatomic, strong) UIButton *refreshButton;
+@property (readonly) BOOL isRefreshAllowed;
+@property (nonatomic) BOOL isRestorationCompleted;
+@property (nonatomic, strong) NSArray *lookUpListArrayCopy;
+
+#ifndef EXTN
+@property (nonatomic, strong) GetLookupFilterRecordsHandler *lFRecordsHandler;
+@property (nonatomic, strong) ZCRMLookupFilterCriteriaHandler *lFCriteriaHandler;
+@property (nonatomic, strong) RefreshControl *refreshControl;
+#endif
+
+@end
+
+@implementation ZCRMLookUpListViewController
+
+#pragma mark -
+
+#ifndef EXTN
+
+- (GetLookupFilterRecordsHandler *)lFRecordsHandler {
+    if(!_lFRecordsHandler) {
+        _lFRecordsHandler = [[GetLookupFilterRecordsHandler alloc] initWithDelegate:self parentModuleName:self.parentModuleName];
+    }
+    
+    return _lFRecordsHandler;
+}
+
+- (void)setLookupFilterCriteria:(NSDictionary *)lookupFilterCriteria {
+    _lookupFilterCriteria = lookupFilterCriteria;
+    self.childValues = [self.lFCriteriaHandler getChildValuesForQueryDetails:lookupFilterCriteria forModule:self.parentModuleName forRecord:self.childRecord subformFieldColumnName:self.subformFieldColumnName];
+}
+
+- (ZCRMLookupFilterCriteriaHandler *)lFCriteriaHandler {
+    if(!_lFCriteriaHandler) {
+        _lFCriteriaHandler = [[ZCRMLookupFilterCriteriaHandler alloc] init];
+    }
+    
+    return _lFCriteriaHandler;
+}
+
+- (void)setChildValues:(NSDictionary *)childValues {
+    _childValues = childValues;
+    _formattedChildValues = [self getFormattedChildValues:childValues];
+}
+
+- (NSString *)getFormattedChildValues:(NSDictionary *)childValues {
+    ZCRMAddModifyDeleteAtServer* recordConvertor = [[ZCRMAddModifyDeleteAtServer alloc] init];
+    NSString *formattedChildValues = [recordConvertor constructDataJSONForPayloadObj:childValues forModule:self.parentModuleName];
+    ConstructCustomJSONData *dataJson = [[ConstructCustomJSONData alloc] init];
+    [dataJson startJSON];
+    [dataJson setData:formattedChildValues forKey:@"child_data" isDoubleQuoteRequired:false];
+    [dataJson endJSON];
+
+    return dataJson.reqJSONString;
+}
+
+#endif
+
+- (NSMutableArray *)unsyncRecordsHandlingRequiredFeatures {
+    if(!_unsyncRecordsHandlingRequiredFeatures) {
+        _unsyncRecordsHandlingRequiredFeatures = [[NSMutableArray alloc] init];
+    }
+    
+    return  _unsyncRecordsHandlingRequiredFeatures;
+}
+
+- (BOOL)isRefreshAllowed {
+    return self.isLookupFilterConfigured;
+}
+
+- (BOOL)showLFFooter {
+    return self.isLookupFilterConfigured && [VTNetUtil isNetworkConnectionAvailable] && self.lookUpListArray.count == 200;
+}
+
+- (BOOL)isUnsyncRecordsHandlingRequired {
+    return [self.unsyncRecordsHandlingRequiredFeatures count];
+}
+
+-(NSArray<NSString*>*) existingLookupPath {
+    if (!_existingLookupPath) {
+        _existingLookupPath = @[]; //Fallback when value is not provided
+    }
+    return _existingLookupPath;
+}
+
+- (ZCRMLookupFilterCache *)lfCache {
+    if (!_lfCache) {
+        _lfCache = [[ZCRMLookupFilterCache alloc] init];
+    }
+    
+    return _lfCache;
+}
+#pragma mark ---- View Initialization Methods ----
+
+- (BOOL)isForNewUI {
+    if (!_isForNewUI) {
+        _isForNewUI = NO;
+    }
+    return _isForNewUI;
+}
+
+-(ZCRMMetadata *) metaData
+{
+    if (!_metaData)
+    {
+        _metaData = [ZCRMMetadata instanceForModule:self.moduleName];
+    }
+    return _metaData;
+}
+
+-(ZCRMFormLabel*)searchFooterLabel
+{
+    if (!_searchFooterLabel)
+    {
+        _searchFooterLabel = [[ZCRMFormLabel alloc] initWithFrame:CGRectMake(0, 0, CGRectGetWidth(self.view.bounds), 60)];
+        _searchFooterLabel.customMarginInset = UIEdgeInsetsMake(0, 10, 0, 10);
+        _searchFooterLabel.font = [VTFont textBoldFontWithSize:16];
+        _searchFooterLabel.textColor = [CurTheme() footerLabelTextColor];
+        _searchFooterLabel.shadowColor = [CurTheme() footerLabelShadowColor];
+        _searchFooterLabel.shadowOffset = CGSizeMake(0, 0.5);
+        _searchFooterLabel.textAlignment = NSTextAlignmentCenter;
+        _searchFooterLabel.backgroundColor = [CurTheme() footerLabelBackgroundColor];
+        _searchFooterLabel.accessibilityIdentifier = AccessibilityConstant.lookupList_Table_FooterView_LabelID;
+        _searchFooterLabel.numberOfLines = 3;
+        _searchFooterLabel.text = [L10NHelper getString:SEARCH_FOOTER_NOMATCHINGRESULTS];
+    }
+    return _searchFooterLabel;
+}
+
+-(ZCRMFormLabel *)tableFooterLabel{
+    if(_tableFooterLabel){
+        return _tableFooterLabel;
+    }
+    _tableFooterLabel = [[ZCRMFormLabel alloc]initWithFrame:CGRectMake(0, 0, CGRectGetWidth(self.view.bounds), FooterViewMinHeight)];
+    _tableFooterLabel.customMarginInset = UIEdgeInsetsMake(0, FooterViewPadding, 0, FooterViewPadding);
+    _tableFooterLabel.font = [VTFont textBoldFontWithSize:16];
+    _tableFooterLabel.textColor = [CurTheme() footerLabelTextColor];
+    _tableFooterLabel.shadowColor = [CurTheme() footerLabelShadowColor];
+    _tableFooterLabel.shadowOffset = CGSizeMake(0, 0.5);
+    _tableFooterLabel.textAlignment = NSTextAlignmentCenter;
+    _tableFooterLabel.backgroundColor = [CurTheme() footerLabelBackgroundColor];
+    _tableFooterLabel.numberOfLines = 3;
+    _tableFooterLabel.accessibilityIdentifier = AccessibilityConstant.lookupList_Table_FooterView_LabelID;
+    _tableFooterLabel.text = [L10NHelper getString:LOOKUP_FOOTER_TOTALUSERSDOWNLOADEDCOUNT placeHolders:@[[NSString stringWithFormat:@"%lu",(unsigned long)[self.lookUpListArray count]]]];
+    return _tableFooterLabel;
+}
+
+-(UITableView*)zTableView
+{
+    if (!_zTableView)
+    {
+        _zTableView = [[UITableView alloc]initWithFrame:CGRectZero style:UITableViewStylePlain];
+        _zTableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
+        _zTableView.separatorColor= [CurTheme() tableViewSeparatorColor];
+        _zTableView.clipsToBounds = YES;
+        _zTableView.scrollsToTop = YES;
+        _zTableView.delegate = self;
+        _zTableView.accessibilityIdentifier = AccessibilityConstant.lookupList_TableViewID;
+        //[_zTableView setTranslatesAutoresizingMaskIntoConstraints:NO];
+        UIView *tempView = [[UIView alloc] init];
+        //TODO: conflict below line is commentted
+        tempView.backgroundColor = [CurTheme() lookUpTableViewVCBgColor];
+        [_zTableView setBackgroundView: tempView];
+            if([_zTableView respondsToSelector:@selector(contentInsetAdjustmentBehavior)]) {
+                _zTableView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentScrollableAxes;
+            }
+    }
+    return _zTableView;
+}
+
+-(VTSearchField *) searchField
+{
+    if (!_searchField)
+    {
+        _searchField= [[VTSearchField alloc] init];
+        [self updateSearchFieldTheme];
+        _searchField.delegate= self;
+        UIView *paddingView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 15, 20)];
+        _searchField.leftView = paddingView;
+        _searchField.leftViewMode = UITextFieldViewModeAlways;
+        _searchField.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
+        _searchField.textAlignment = NSTextAlignmentLeft;
+        [_searchField addTarget:self action:@selector(serverSearch) forControlEvents:UIControlEventEditingDidEndOnExit];
+    }
+    return _searchField;
+}
+
+-(void) updateSearchFieldTheme
+{
+    NSString *placeHolderText = [L10NHelper getString:SEARCH_PLACEHOLDERTEXT_SEARCHMODULE placeHolders:@[GetPluralModuleDisplayName(self.moduleName)]];
+    _searchField.attributedPlaceholder = [[NSAttributedString alloc] initWithString:placeHolderText attributes:@{NSForegroundColorAttributeName: [CurTheme() iPhoneNavBarSearchTextColor], NSFontAttributeName : [VTFont medium]}];
+    [_searchField styleAsListViewSearchTextField];
+    _searchField.textColor= [CurTheme() primaryTextColor];
+    _searchField.tintColor= [CurTheme() themeActionItemColor];
+}
+
+-(UISearchBar*) searchBar
+{
+    return self.searchViewController.searchBar;
+    /*
+    if(!_searchBar)
+    {
+        _searchBar = [[UISearchBar alloc] initWithFrame:CGRectMake(0, 0, self.view.frame.size.width,44)];
+        [_searchBar setBackgroundImage:[CurTheme() searchBarBackgroundImage]];
+        NSString *placeHolderText = [L10NHelper getString:SEARCH_PLACEHOLDERTEXT_SEARCHMODULE placeHolders:@[[GetPluralModuleDisplayName(self.moduleName)]]];
+        _searchBar.placeholder = placeHolderText;
+        UITextField *searchField = [_searchBar valueForKey:@"_searchField"];
+        if(searchField)
+        {
+            [searchField setBackgroundColor:VTRGB(236, 235, 235)];
+            [searchField setFont:[VTFont medium]];
+        }
+        [_searchBar setTintColor:[CurTheme() listViewNavigationBarColor]];
+        _searchBar.delegate = self;
+    }
+    return _searchBar;
+    */
+}
+
+-(UISearchController *)searchViewController
+{
+    if(!_searchViewController)
+    {
+        _searchViewController = [[UISearchController alloc]initWithSearchResultsController:nil];
+        _searchViewController.searchResultsUpdater = self;
+        _searchViewController.hidesNavigationBarDuringPresentation = NO;
+        _searchViewController.dimsBackgroundDuringPresentation = NO;
+        _searchViewController.searchBar.delegate = self;
+        _searchViewController.delegate = self;
+        [_searchViewController.searchBar sizeToFit];
+        [self updateSearchControllerTheme];
+        self.definesPresentationContext = true;
+    }
+    return _searchViewController;
+}
+
+-(UIBarButtonItem *)addNewButton
+{
+    if(!_addNewButton)
+    {
+        _addNewButton = [[UIBarButtonItem alloc] initWithImage:[CurTheme() iPhoneListViewNavigationAddImageForState:UIControlStateNormal] style:UIBarButtonItemStylePlain target:self action:@selector(createNewRecordToAssociate:)];
+        _addNewButton.accessibilityIdentifier = AccessibilityConstant.lookupList_NavBar_AddButtonID;
+    }
+    return _addNewButton;
+
+}
+
+-(void) updateSearchControllerTheme
+{
+    UISearchBar* baseSearchBar = _searchViewController.searchBar;
+    baseSearchBar.accessibilityIdentifier = AccessibilityConstant.lookupList_SearchBarID;
+    [baseSearchBar setBackgroundImage:[CurTheme() lookupSearchBarBackgroundImage]];
+        
+    UITextField *searchField;
+    searchField = baseSearchBar.searchTextField;
+    searchField.accessibilityIdentifier = AccessibilityConstant.lookupList_SearchTextFieldID;
+        
+    if(searchField)
+    {
+        [searchField setBackgroundColor:[CurTheme() lookupSearchFieldBackgroundColor]];
+        [searchField setFont:[VTFont medium]];
+        searchField.textColor = [CurTheme() primaryTextColor];
+    }
+    
+    [baseSearchBar setTintColor:[CurTheme() themeActionItemColor]];
+
+    [searchField setFont:[VTFont medium]];
+    [searchField setTextColor:[CurTheme() primaryTextColor]];
+
+    [self updateSearchBarPlaceholderInSearchBar:baseSearchBar];
+
+    //Cancel button
+    [[UIBarButtonItem appearanceWhenContainedInInstancesOfClasses:@[[UISearchBar class]]] setTitleTextAttributes:@{ NSForegroundColorAttributeName : [CurTheme() themeActionItemColor]} forState:UIControlStateNormal];
+}
+
+-(void)updateSearchBarPlaceholderInSearchBar:(UISearchBar*)searchBar {
+    VT_EXECUTE_ON_UI_THREAD_START
+    NSString *placeHolderText = [SearchHelper getLookupSearchBarPlaceholderFor:self.moduleName];
+    NSAttributedString *placeHolderString = [[NSAttributedString alloc] initWithString:placeHolderText attributes:@{NSForegroundColorAttributeName : [CurTheme() footerLabelTextColor], NSFontAttributeName: [VTFont large]}];
+    [searchBar.searchTextField setAttributedPlaceholder:placeHolderString];
+    VT_EXECUTE_ON_UI_THREAD_END
+}
+
+-(UITableView *) searchResultContentView
+{
+    if (!_searchResultContentView)
+    {
+        CGRect searchResultViewFrame= CGRectMake(self.view.frame.origin.x, navBarHeight /*self.view.frame.origin.y - self.view.bounds.size.height*/, self.view.bounds.size.width, 0);
+        _searchResultContentView= [[UITableView alloc] initWithFrame:searchResultViewFrame];
+        _searchResultContentView.backgroundColor= [UIColor clearColor];
+        _searchResultContentView.separatorColor = [UIColor clearColor];
+    }
+    return _searchResultContentView;
+}
+
+-(UIView*)zLoadingView
+{
+    if (!_zLoadingView)
+    {
+        _zLoadingView = [[ZCommonLoadingView alloc] init];
+        [_zLoadingView styleAsListViewLoadingView];
+        _zLoadingView.doesRequireViewBlur = YES;
+
+    }
+    return _zLoadingView;
+}
+
+#ifndef EXTN
+- (RefreshControl *)refreshControl {
+    if (!_refreshControl) {
+        _refreshControl = [[RefreshControl alloc] init];
+        [_refreshControl addTarget:self action:@selector(userDidRefreshed:) forControlEvents:UIControlEventValueChanged];
+    }
+    
+    return _refreshControl;
+}
+#endif
+
+
+-(void) setLookupArray
+{
+    self.isSingleDisplayField = NO;
+    [self setupSearchAndDisplayFields];
+    [self updateSearchBarPlaceholderInSearchBar:self.searchBar];
+    if (IsUserOwnerModule(self.moduleName))
+    {
+#ifndef EXTN
+        self.lookUpListArray = [self getValidUsersListWithConfigurationApplied];
+#endif
+    }
+    else if(IsCampaignsModule(self.moduleName))
+    {
+        NSString *criteriaString = nil;
+        
+        if (self.isLookupFilterConfigured && [GlobalUtil isNotEmpty:self.queryId]) {
+            criteriaString = [self appendLookupFilterCriteria:nil];
+        }
+        
+        self.lookUpListArray = [VTDBHandler fetchDataWithTableName:GetModuleEntityForModuleName(self.moduleName) rawCriteria:criteriaString columns:@[GlobalUtil.recordId, CAMPAIGN_NAME]];
+    }
+    else {
+        NSArray *resultObj = nil;
+
+        [self setExtraValues];
+        
+        NSString *criteria = [self getAllRecordsfilterCriteria];
+        if (self.isLookupFilterConfigured && [GlobalUtil isNotEmpty:self.queryId]) {
+            criteria = [self appendLookupFilterCriteria:criteria];
+        } else if ([self canIncludeCachedCSCriteria]) {
+            NSString * csCriteria = [NSString stringWithFormat:@"%@ IN (%@)", GlobalUtil.recordId, [cScriptSetCriteriaFilteredRecordIDs componentsJoinedByString:@","]];
+            criteria = [NSString stringWithFormat:@"(%@) AND (%@) AND (ID NOT LIKE 'NEW%%')", criteria, csCriteria];
+        }
+        if (self.hideQuickCreate) {
+            NSString *extraCriteria = [NSString stringWithFormat:@"%@ NOT LIKE '%@%%'", self.metaData.primaryFieldColumnName, RECORD_ADD_PREFIX];
+            if ([GlobalUtil isEmpty:criteria]) {
+                criteria = extraCriteria;
+            }
+            else {
+                criteria = [criteria stringByAppendingFormat:@" AND %@", extraCriteria];
+            }
+        }
+        criteria = [self checkAndAddCriteriaForSupportedLayouts:criteria];
+        NSArray* displayFields = [FormulaHelper getDynamicFormulaInvolvedFieldColumnIn:self.moduleName with:[self.displayFields copy]];
+        resultObj = FetchRecordsForModule(self.moduleName, [self.searchFields copy], displayFields, criteria);
+        self.lookUpListArray = resultObj;
+        if(self.isLookupFilterConfigured) {
+            NSSortDescriptor *idSort = [NSSortDescriptor sortDescriptorWithKey:RECORD_ID ascending:false];
+            if (self.lookUpListArray.firstObject[RECORD_ID] != nil) {
+                self.lookUpListArray = [self.lookUpListArray sortedArrayUsingDescriptors:@[idSort]];
+            }
+        }
+        [self showErrorToastOnNetworkFailure];
+    }
+}
+
+- (NSString *)getAllRecordsfilterCriteria {
+    NSString *criteria;
+    if ([GlobalUtil isProductsModule:self.moduleName])
+    {
+        NSString *columnId= [self.metaData columnNameForFieldLabel: PRODUCT_ACTIVE];
+        if(columnId){
+            NSString* selectedRecords =  [NSString stringWithFormat:@"'%@'", [initialSelectedEntityIdList componentsJoinedByString:@"','"]];
+            NSString *seletcedProductsCriteria = [NSString stringWithFormat:@"%@ IN (%@) ",RECORD_ID,selectedRecords];
+            criteria = [NSString stringWithFormat:@"%@ = '%@' OR %@",columnId,STRING_TRUE, seletcedProductsCriteria];
+        }
+    }
+    else if(IsLeadsModule(self.moduleName))
+    {
+        NSString *convertedColumn = [self.metaData columnNameForFieldLabel:LEAD_CONVERTED];
+        NSString *leadCriteria = [NSString stringWithFormat:@"%@ IS NULL OR %@ != 'true'", convertedColumn,convertedColumn];
+        criteria = leadCriteria;
+    }
+    
+    if([self.fieldLabel isEqualToString:CONTACT_REPORTING_TO_CONTACT_ID])   // to fetch contacts specific to the selected Account
+    {
+        criteria = [NSString stringWithFormat:@"%@ = '%@' AND %@ != '%@'",CONTACT_ACCOUNTID,self.relatedRecordID,CONTACT_ENTITYID,self.entityID];
+    }
+    if([self.fieldLabel isEqualToString:ACCOUNT_PARENT_ACCOUNT_ID])
+    {
+        criteria = [NSString stringWithFormat:@"%@ != '%@'",ACCOUNT_ENTITYID,self.entityID];
+    }
+    if (IsWizardSupportedModule(self.moduleName)) {
+        if (![GlobalUtil isEmpty: criteria]) {
+            criteria = [criteria stringByAppendingString:[NSString stringWithFormat:@" AND %@", RECORD_STATE_NOT_DRAFT]];
+        } else {
+            criteria = RECORD_STATE_NOT_DRAFT;
+        }
+    }
+    if(IsReviewProcessSupportedModule(self.moduleName) && [self.metaData isFieldAvailable:KEY_REVIEW_PROCESS_STATUS]) {
+        NSString *reviewProcessCriteria = [NSString stringWithFormat:@"(%@ IS NULL OR %@ IN ('%@', '%@', ''))", KEY_REVIEW_PROCESS_STATUS, KEY_REVIEW_PROCESS_STATUS, KEY_RP_RECORD_STATUS_APPROVED, KEY_RP_RECORD_STATUS_UNREVIEWED];
+        if ([GlobalUtil isEmpty:criteria]) {
+            criteria = reviewProcessCriteria;
+        } else {
+            criteria = [NSString stringWithFormat:@"(%@) AND (%@)",criteria, reviewProcessCriteria];
+        }
+    }
+    return  criteria;
+}
+
+- (NSString *)appendLookupFilterCriteria:(NSString *)criteria {
+    NSString *lookupFilterCriteria = [NSString stringWithFormat:@"%@ IN (%@)", GlobalUtil.recordId, [self getLookupFilterRecordsFetchQuery]];
+    if (![VTNetUtil isNetworkConnectionAvailable]) {
+#ifndef EXTN
+        BOOL isOfflineSupported = false;
+        if(![GlobalUtil isEmpty:self.lookupFilterCriteria[ZCOL_CUSTOM_VIEWS_IS_OFFLINE_SUPPORTED]]) {
+            isOfflineSupported = [self.lookupFilterCriteria[ZCOL_CUSTOM_VIEWS_IS_OFFLINE_SUPPORTED] boolValue];
+        }
+        if(isOfflineSupported) {
+            NSString *lfOfflineCriteria = [self.lFCriteriaHandler getLookupFilterRecordsOfflineFetchCriteriaWithModule:self.moduleName lookupFilterCriteria:self.lookupFilterCriteria];
+            if (![GlobalUtil isEmpty:lfOfflineCriteria]) {
+                lookupFilterCriteria = lfOfflineCriteria;
+            }
+        }
+#endif
+    }
+    
+    if ([GlobalUtil isEmpty:criteria]) {
+        criteria = lookupFilterCriteria;
+    }
+    else {
+        criteria = [NSString stringWithFormat:@"(%@) AND %@",criteria, lookupFilterCriteria];
+    }
+    return criteria;
+}
+
+- (NSString *)appendLookupFilterSearchCriteria:(nullable NSString *)criteria searchResults:(nonnull NSArray *)searchResults {
+    NSArray *searchResultRecordIds = [searchResults valueForKey:RECORD_ID];
+    NSString *recordIds = [searchResultRecordIds componentsJoinedByString:@","];
+    NSString *queryCriteria = [NSString stringWithFormat:@"%@ IN (%@)",RECORD_ID, recordIds];
+    
+    if ([GlobalUtil isEmpty:criteria]) {
+        criteria = queryCriteria;
+    }
+    else {
+        criteria = [NSString stringWithFormat:@"(%@) AND %@",criteria, queryCriteria];
+    }
+    
+    return criteria;
+}
+
+- (NSString *)getLookupFilterRecordsFetchQuery {
+    NSArray *recordIds = [self getRecordIdsFromLFCache];
+    NSString *recordIdsString = [recordIds componentsJoinedByString:@","];
+    
+    return recordIdsString;
+}
+
+// Filtering only the records of Layouts that has Attachments relatedList for Photos and File Share
+-(NSString *) checkAndAddCriteriaForSupportedLayouts: (NSString *) criteria {
+    
+    if (self.isFromAttachment) {
+        
+        NSString *defaultLayoutId = [self.metaData defaultLayoutId];
+        NSArray *supportedLayouts = [RelatedListUtil getSupportedLayoutsFor: ATTACHMENTS_MODULE in: self.moduleName];
+        if ([GlobalUtil isEmpty:defaultLayoutId] && [GlobalUtil isEmpty:supportedLayouts]) {
+            return criteria;
+        }
+        NSMutableString *supportedLayoutsString = [NSMutableString string];
+        for (NSString *str in supportedLayouts) {
+            if (supportedLayoutsString.length > 0) {
+                 [supportedLayoutsString appendString:@", "];
+             }
+             [supportedLayoutsString appendFormat:@"'%@'", str];
+        }
+        NSString *attachmentCriteria = [NSString stringWithFormat:@"COALESCE(%@, '%@') IN (%@)",RECORD_LAYOUTID, defaultLayoutId, supportedLayoutsString];
+        if ([GlobalUtil isEmpty:criteria]) {
+            criteria = attachmentCriteria;
+        }
+        else {
+            criteria = [NSString stringWithFormat:@"(%@) AND %@",criteria, attachmentCriteria];
+        }
+    }
+    return criteria;
+}
+
+-(void) setExtraValues
+{
+    //for getting extra info
+    //Called from the subclass
+}
+
+-(void) showErrorToastOnNetworkFailure {
+    EXECUTE_CODE_ON_UI_THREAD_START
+    if (![VTNetUtil isNetworkConnectionAvailable]) {
+         BOOL isDownloadCompleted = [ZCRMRecordsData isRecordsDownloadCompletedFor:self.moduleName];
+        NSInteger recordsCount = [ZCRMRecordsData numberOfRecordsDownlodedFor:self.moduleName];
+        if (!isDownloadCompleted && recordsCount == 0) {
+            NSString *errorToastMessage = [self getNetworkErrorToastMessage];
+            VTToastBar * toast1=[VTToastBar makeToastOfType:VTToastBarTypePersistent withText:errorToastMessage];
+            toast1.delegate=self;
+            [toast1 addToastTo:self.zTableView];
+            [toast1 show];
+        }
+        else {
+            [self removeToast];
+        }
+    }
+    EXECUTE_CODE_ON_UI_THREAD_END
+}
+
+-(void) handleErrorToastOnNetworkFailureForShareExtension {
+    EXECUTE_CODE_ON_UI_THREAD_START
+    BOOL isDownloadCompleted = [ZCRMRecordsData isRecordsDownloadCompletedFor:self.moduleName];
+    NSInteger recordsCount = [ZCRMRecordsData numberOfRecordsDownlodedFor:self.moduleName];
+    if (!isDownloadCompleted && recordsCount == 0) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSString *errorToastMessage = [self getNetworkErrorToastMessage];
+            VTToastBar * toast1=[VTToastBar makeToastOfType:VTToastBarTypePersistent withText:errorToastMessage];
+            toast1.delegate=self;
+            [toast1 addToastTo:self.zTableView];
+            [toast1 show];
+        });
+    }
+    else {
+        [self removeToast];
+    }
+    EXECUTE_CODE_ON_UI_THREAD_END
+}
+
+-(NSString *)getNetworkErrorToastMessage {
+#ifdef EXTN
+    return [L10NHelper getString:LOOKUP_TOAST_MESSAGE_SHAREEXTENSIONNETWORKERROR placeHolders:@[GetPluralModuleDisplayName(self.moduleName), CRMAppMetaFetcher.DisplayName]];
+#else
+    return [L10NHelper getString:UI_COMMON_VALIDATION_INTERNETCONNECTIONREQUIRED];
+#endif
+}
+
+- (void)handleLookupFilterError:(VTTaskError *)errorInfo completionHandler:(void (^)(BOOL showLocalData))completionHandler {
+#ifndef EXTN
+    BOOL isInvalidaQueryId = [errorInfo valueForKey:@"invalidQueryId"];
+    if(isInvalidaQueryId == true) {
+        [GetLookupFilterRecordsHandler showInvalidQueryIdAlertWithCompletionHandler:^{
+            completionHandler(false);
+        }];
+    }
+    else {
+        completionHandler(true);
+    }
+#endif
+}
+
+-(void)removeToast {
+    EXECUTE_CODE_ON_UI_THREAD_START
+    VTToastBar *toast=[VTToastBar sharedInstanceWithType:VTToastBarTypeBanner];
+    [toast removeToast];
+    EXECUTE_CODE_ON_UI_THREAD_END
+}
+
+-(NSArray *)filterReviewProcessRecords:(NSArray *)fetchedObject{
+    if(IsReviewProcessSupportedModule(self.moduleName)){
+        NSPredicate *approved = [NSPredicate predicateWithFormat:@"SELF.%@ == %@", KEY_REVIEW_PROCESS_STATUS, KEY_RP_RECORD_STATUS_APPROVED];
+        NSPredicate *unreviewed = [NSPredicate predicateWithFormat:@"SELF.%@ == %@", KEY_REVIEW_PROCESS_STATUS, KEY_RP_RECORD_STATUS_UNREVIEWED];
+        NSPredicate *nilReviewStatus = [NSPredicate predicateWithFormat:@"SELF.%@ == nil", KEY_REVIEW_PROCESS_STATUS, KEY_RP_RECORD_STATUS_UNREVIEWED];
+        NSPredicate *emptyReviewStatus = [NSPredicate predicateWithFormat:@"SELF.%@ == ''", KEY_REVIEW_PROCESS_STATUS, KEY_RP_RECORD_STATUS_UNREVIEWED];
+        NSPredicate *predicate = [NSCompoundPredicate orPredicateWithSubpredicates:@[approved, unreviewed, nilReviewStatus, emptyReviewStatus]];
+        return [[fetchedObject filteredArrayUsingPredicate:predicate] mutableCopy];
+    }
+    return fetchedObject;
+}
+
+#pragma mark -
+#pragma mark ---- View Cycle Methods ----
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    [self trackIfChangeOwnerEvent];
+    [self restoreSavedState];
+    self.extendedLayoutIncludesOpaqueBars = YES;
+    self.edgesForExtendedLayout = UIRectEdgeNone;
+    self.navigationController.navigationBar.translucent = NO;
+    self.lFAllRecords = [[NSArray alloc] init];
+    [self doNarBarRelatedChanges];
+    [self configureView];
+    self.view.backgroundColor = [CurTheme() lookUpListVCBgColor];
+    self.zTableView.backgroundColor = [CurTheme() lookUpListVCBgColor];
+    participantsList = [self.selectedObjects mutableCopy];
+    initialSelectedEntityIdList = [NSArray new];
+    if (self.idOfObjectToBeSelected != nil) {
+        initialSelectedEntityIdList = [initialSelectedEntityIdList arrayByAddingObject:self.idOfObjectToBeSelected];
+    } else if (self.selectedObjects != nil && [self.moduleName isEqualToString:PRODUCTS_MODULE]) {
+        initialSelectedEntityIdList = [self.selectedObjects valueForKey:RECORD_ID];
+    }
+    if (![VTNetUtil isNetworkConnectionAvailable])
+    {
+        ShowToastWithMessage([L10NHelper getString:ZDOCS_LISTVIEW_VALIDATION_TITLE_NONETWORKCONNECTION]);
+        return;
+    }
+#ifndef EXTN
+#endif
+    //self.zTableView.tintColor = [CurTheme() themeActionItemColor];
+    [ZNotificationCenter addObserver:self selector:@selector(currentUserSeparatorPrefDidChange:) name:CURRENT_USER_SEPARATOR_PREFERENCE_CHANGED object:nil];
+    [ZNotificationCenter addObserver:self selector:@selector(moduleMetaDidRefresh:) name:MODULE_META_DID_REFRESH object:nil];
+}
+
+-(void)viewWillDisappear:(BOOL)animated
+{
+    [super viewWillDisappear:animated];
+    isAlreadyLoaded = NO;
+}
+
+-(void)viewDidDisappear:(BOOL)animated{
+    [super viewDidDisappear:animated];
+    [ZNotificationCenter removeObserver:UIKeyboardDidShowNotification];
+    [ZNotificationCenter removeObserver:UIKeyboardDidHideNotification];
+}
+
+-(void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    
+    if (!isAlreadyLoaded) {
+        [self loadLookupView];
+        if(self.isLookupFilterConfigured && [GlobalUtil isNotEmpty:self.queryId]) {
+            [self fetchLookupFilterCriteriaFromServer];
+        }
+        [UIBarButtonItem zCustomizeSearchbarCancelButtonWithColor:[CurTheme() themeActionItemColor]];
+    }
+    isAlreadyLoaded = YES;
+    [ZNotificationCenter addObserver:self selector:@selector(keyboardDidShow:) name:UIKeyboardDidShowNotification object:nil];
+    [ZNotificationCenter addObserver:self selector:@selector(keyboardWillHide:) name:UIKeyboardDidHideNotification object:nil];
+
+}
+
+-(void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.showEditForm) {
+        self.showEditForm = NO;
+        [self showEditFormWithEntityId:self.idOfObjectToBeSelected];
+    } else {
+        [self restoreNextState];
+    }
+    self.isRestorationCompleted = YES;
+}
+
+-(void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    #ifdef EXTN
+    if (UITraitCollection.currentTraitCollection.userInterfaceStyle != previousTraitCollection.userInterfaceStyle)
+    {
+        if ([ZCRMThemeManager isAutomaticThemeSelectionEnabled])
+        {
+            [ZCRMThemeManager setAutoDeviceTheme:[ZCRMThemeManager getSystemTheme]];
+        }
+        [self updateThemeColor];
+    }
+    #endif
+}
+
+-(void)appThemeChanged:(id)notificationObj
+{
+    [super appThemeChanged:notificationObj];
+    #ifndef EXTN
+    [self updateThemeColor];
+    #endif
+}
+
+-(void) updateThemeColor {
+    _searchFooterLabel.textColor = [CurTheme() footerLabelTextColor];
+    _searchFooterLabel.shadowColor = [CurTheme() footerLabelShadowColor];
+    _searchFooterLabel.backgroundColor = [CurTheme() footerLabelBackgroundColor];
+    
+    self.tableFooterLabel.textColor = [CurTheme() footerLabelTextColor];
+    self.tableFooterLabel.shadowColor = [CurTheme() footerLabelShadowColor];
+    self.tableFooterLabel.backgroundColor = [CurTheme() footerLabelBackgroundColor];
+    
+    _zTableView.separatorColor= [CurTheme() tableViewSeparatorColor];
+    UIView *tempView = [[UIView alloc] init];
+    tempView.backgroundColor = [CurTheme() lookUpListVCBgColor];
+    [_zTableView setBackgroundView: tempView];
+    [self updateSearchControllerTheme];
+    [self updateSearchFieldTheme];
+    [self doNarBarRelatedChanges];
+    self.view.backgroundColor = [CurTheme() lookUpListVCBgColor];
+    self.zTableView.backgroundColor = [CurTheme() lookUpListVCBgColor];
+    [UIBarButtonItem zCustomizeSearchbarCancelButtonWithColor:[CurTheme() themeActionItemColor]];
+    [self.zTableView reloadData];
+    [_zLoadingView styleAsListViewLoadingView];
+    [_zNoRecordView styleAsListViewNoDataView];
+    [self updateNoRecordViewTheme];
+#ifndef EXTN
+    self.refreshControl.backgroundColor = [CurTheme() refreshControlBackgroundColor];
+#endif
+}
+
+-(BOOL)isRecordDownloadForCampaignsModule {
+#ifdef EXTN
+    return true;
+#else
+    return [ZCRMRecordsData numberOfRecordsDownlodedFor:self.moduleName] != 0 || [ZCRMRecordsData isDataDownloadedFor:self.moduleName];
+#endif
+}
+
+-(void)setupSearchAndDisplayFields {
+    self.isSingleDisplayField = NO;
+    if (IsUserOwnerModule(self.moduleName)) {
+#ifndef EXTN
+        self.displayFields = self.searchFields = [SearchHelper getLookupCriteriaSearchFieldsFor:self.moduleName isForServerSearch:false];
+        self.serverSearchFields = [SearchHelper getLookupCriteriaSearchFieldsFor:self.moduleName isForServerSearch:true];
+#endif
+    }
+    else if(IsCampaignsModule(self.moduleName)) {
+        self.displayFields = self.searchFields = [SearchHelper getLookupCriteriaSearchFieldsFor:self.moduleName isForServerSearch:false];
+        self.serverSearchFields = [SearchHelper getLookupCriteriaSearchFieldsFor:self.moduleName isForServerSearch:true];
+        self.isSingleDisplayField = YES;
+    }
+    else {
+        //Setting Display Fields
+        self.displayFields = [ZCRMSettings getDisplayFieldLabelsForModule:self.moduleName];
+        
+        [self filterAndAddEligibleFields];
+        
+        self.isSingleDisplayField = (self.displayFields.count == 1) ? YES : NO;
+        
+        // Setting Search Fields
+        self.searchFields = [SearchHelper getLookupCriteriaSearchFieldsFor:self.moduleName isForServerSearch:false];
+        self.serverSearchFields = [SearchHelper getLookupCriteriaSearchFieldsFor:self.moduleName isForServerSearch:true];
+        
+        if([self.fieldLabel isEqualToString:CONTACT_REPORTING_TO_CONTACT_ID])   // to fetch contacts specific to the selected Account
+        {
+            NSMutableArray *searchFields = [self.searchFields mutableCopy];
+            [searchFields removeObject:CONTACT_ACCOUNTID];
+            self.searchFields = [searchFields copy];
+            NSMutableArray *serverSearchFields = [self.serverSearchFields mutableCopy];
+            [serverSearchFields removeObject:CONTACT_ACCOUNTID];
+            self.serverSearchFields = [serverSearchFields copy];
+        }
+    }
+}
+
+-(void) loadLookupView
+{
+    VT_EXECUTE_ON_DEFAULT_PRIORITY_THREAD_START
+       VT_EXECUTE_ON_UI_THREAD_START
+    [self showZLoadingViewWithOffset:UIEdgeInsetsZero];
+       VT_EXECUTE_ON_UI_THREAD_END
+    if(self.isLookupFilterConfigured && [GlobalUtil isNotEmpty:self.queryId]) {
+#ifndef EXTN
+        if ([StateRestorationUtil hasNextState] && !self.isRestorationCompleted) {
+            // During state restoration, to avoid sync error, records are shown from cache.
+            [self loadLookupData];
+            return;
+        }
+#endif
+        [self fetchLookupFilterCriteriaFromDB:^(NSArray<NSDictionary<NSString *,id> *> * _Nullable criteria) {
+            self.lookupFilterCriteria = [criteria firstObject];
+            if(![GlobalUtil isEmpty:[self getRecordIdsFromLFCache]] && ![self.fieldLabel isEqualToString:CONTACT_REPORTING_TO_CONTACT_ID] && [GlobalUtil isEmpty:self.cScriptSetCriteria]) {
+                [self loadLookupData];
+            }
+            else {
+                [self getLookupFilterRecordsFromServer];
+            }
+        }];
+    } 
+    else if ([GlobalUtil isNotEmpty:self.cScriptSetCriteria]) {
+        [self getLookupFilterRecordsFromServer];
+    }
+    else if (IsCampaignsModule(self.moduleName) && ![self isRecordDownloadForCampaignsModule]) {
+        [self startInitialDownloadForCampaignsModule];
+        [self showErrorToastOnNetworkFailure];
+    }
+    else if(!IsOwnersModule(self.moduleName) && ![self.moduleName isEqualToString:USERS_MODULE] && !IsCampaignsModule(self.moduleName))
+    {
+        [self syncRecordsFromServer];
+    }
+    else{
+        [self loadLookupData];
+    }
+    VT_EXECUTE_ON_DEFAULT_PRIORITY_THREAD_END
+}
+
+- (void)fetchLookupFilterCriteriaFromDB:(void (^)(NSArray<NSDictionary<NSString *,id> *> * _Nullable))completionHandler {
+#ifndef EXTN
+    VT_EXECUTE_ON_UI_THREAD_START
+    [self.lFCriteriaHandler fetchLookupFilterCriteriaWithQueryId:self.queryId withCompletionBlock:^(NSArray<NSDictionary<NSString *,id> *> * _Nullable criteria) {
+        completionHandler(criteria);
+    }];
+    VT_EXECUTE_ON_UI_THREAD_END
+#endif
+}
+
+- (void)fetchLookupFilterCriteriaFromServer {
+#ifndef EXTN
+    [self.lFCriteriaHandler isCriteriaProcessingRequired:GetModuleAPIName(self.moduleName) withCompletionBlock:^(BOOL processingRequired) {
+        if (processingRequired) {
+            [self.lFCriteriaHandler getProcessedCriteriaFromServerWithModule:self.moduleName moduleAPIName:GetModuleAPIName(self.moduleName)];
+        }
+    }];
+#endif
+}
+
+-(void)loadLookupData
+{
+    [self setLookupArray];
+    [self checkForRelatedRecordsAndReloadTable];
+}
+
+-(void)configureView
+{
+    [self.view addSubview:self.zTableView];
+    self.zTableView.tableHeaderView = self.searchViewController.searchBar;
+    [self.zTableView equalsContainerView];
+    [self setTableFooterView];
+    if(self.isLookupFilterConfigured == true) {
+#ifndef EXTN
+        [self.refreshControl addToScrollViewWithView:self.zTableView];
+#endif
+    }
+}
+
+-(void)setTableFooterView{
+    EXECUTE_CODE_ON_UI_THREAD_START
+     if((IsUserOwnerModule(self.moduleName) &&  !self.isLookupFilterConfigured) || self.showLFFooter) {
+        self.zTableView.tableFooterView = self.tableFooterLabel;
+         self.zTableView.tableFooterView.accessibilityIdentifier = AccessibilityConstant.lookupList_Table_FooterViewID;
+         
+        [self setVisibilityForFooterView];
+    }
+    EXECUTE_CODE_ON_UI_THREAD_END
+}
+
+-(void)setVisibilityForFooterView{
+    BOOL hideFooter;
+    if(self.showLFFooter) {
+        hideFooter = NO;
+    }
+    else if(IsUserOwnerModule(self.moduleName) && [self.lookUpListArray count] > 0 && !self.isLookupFilterConfigured) {
+        hideFooter = NO;
+    }
+    else {
+        return;
+    }
+    self.zTableView.tableFooterView.hidden = hideFooter;
+}
+
+-(void)doNarBarRelatedChanges
+{
+    [self.navigationController.navigationBar setBackgroundImage:[CurTheme() iPhoneNavigationBarBackgroundImage] forBarMetrics:UIBarMetricsDefaultPrompt];
+    [self.navigationController.navigationBar setShadowImage:[CurTheme() navigationBarShadowImage]];
+    
+    if (isCurrentDeviceTypeiPad() && (self.navigationController.modalPresentationStyle == UIModalPresentationPageSheet || self.navigationController.modalPresentationStyle == UIModalPresentationFormSheet))
+    {
+        [self.navigationController.navigationBar styleAsFormPresentationNavigationBar];
+         self.navigationController.navigationBar.barTintColor = [CurTheme() navigationBarItemTintColorFormSheet];
+    } else if (!isCurrentDeviceTypeiPad() && self.isForNewUI) {
+        self.navigationController.navigationBar.tintColor = [CurTheme() themeActionItemColor];
+    } else {
+        [self.navigationController.navigationBar styleAsNavigationBar];
+        self.navigationController.navigationBar.barTintColor = [CurTheme() listViewNavigationBarColor];
+    }
+    self.navigationController.navigationBar.accessibilityIdentifier = AccessibilityConstant.lookupList_NavBarID;
+    self.navigationItem.backBarButtonItem.tintColor = [CurTheme() themeActionItemColor]; //= [[UIBarButtonItem alloc] initWithCustomView:[[UIImageView alloc] initWithImage:[CurTheme() navigationBarBackIndicatorImage]]];
+    self.navigationItem.backBarButtonItem.isAccessibilityElement = YES;
+    self.navigationItem.backBarButtonItem.accessibilityIdentifier = AccessibilityConstant.lookupList_NavBar_BackButtonID;
+    [self addNavigationTitle];
+    
+#ifdef EXTN
+#else
+    if(self.isChangeOwner){
+        self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancelButtonClicked)];
+        if(isCurrentDeviceTypeiPad()){
+            [ZCRMUIUtil updateNavigationItemForFormPresentationStyle:self.navigationItem];
+        }
+    }
+    [self setRightBarButtonItems];
+#endif
+}
+
+-(void) setRightBarButtonItems
+{
+#ifdef EXTN
+#else
+    if(!self.navigationItem.rightBarButtonItem)
+    {
+        if([self isParticipantsField] || self.isMultipleAssociatedLookup)
+        {
+            UIBarButtonItem *doneButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(doneAction:)];
+            
+            self.navigationItem.rightBarButtonItem = doneButton;
+            
+            doneButton.accessibilityIdentifier = AccessibilityConstant.lookupList_NavBar_DoneButtonID;
+            
+            if (isCurrentDeviceTypeiPad() && self.navigationController.modalPresentationStyle == UIModalPresentationFormSheet)
+            {
+                [doneButton styleAsFormPresentationRightBarItem];
+            }
+        }
+        else if(!IsInventoryModule(self.moduleName) && ![GlobalUtil isPriceBooksModule:self.moduleName] && !self.hideQuickCreate && [[ZCRMAppData activeModules] containsObject:self.moduleName])
+        {
+            
+            
+            
+            UIBarButtonItem *space = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFixedSpace target:nil action:nil];
+            space.width = -10;
+            self.navigationItem.rightBarButtonItems = @[space,self.addNewButton];
+            if (isCurrentDeviceTypeiPad() && self.navigationController.modalPresentationStyle == UIModalPresentationFormSheet)
+            {
+                [self.addNewButton styleAsFormPresentationRightBarItem];
+            }
+        }
+    }
+#endif
+}
+
+#ifndef EXTN
+-(BOOL)isParticipantsField {
+    return ([self.fieldLabel isEqualToString:EVENT_PARTICIPANTS]) && self.participantDelegate ? YES : NO;
+}
+#endif
+
+-(void) actionToBeSaved
+{
+#ifdef EXTN
+#else
+    if([self.fieldLabel isEqualToString:EVENT_PARTICIPANTS])
+    {
+        NSString *participantType = [self.moduleName isEqualToString:USERS_MODULE] ? EVENT_INVITEE_TYPE_USER : IsContactsModule(self.moduleName) ? EVENT_INVITEE_TYPE_CONTACT : EVENT_INVITEE_TYPE_LEAD;
+        NSMutableArray *notUpdated = [participantsList mutableCopy];
+        [notUpdated removeObjectsInArray:self.selectedObjects];
+        [self.participantDelegate removeParticipants:notUpdated ofType:participantType];
+        
+        notUpdated = [self.selectedObjects mutableCopy];
+        [notUpdated removeObjectsInArray:participantsList];
+        
+        NSMutableArray *newParticipants = [NSMutableArray new];
+        for(NSString *toAdd in notUpdated)
+        {
+            [newParticipants addObject: participantDict[toAdd]];
+            
+        }
+        [self.participantDelegate addParticipants:newParticipants ofType:participantType];
+    }
+    
+#endif
+}
+
+-(void)doneAction:(id)sender
+{
+    [self actionToBeSaved];
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
+-(void)addNavigationTitle
+{
+    UILabel *titleLabel = [[UILabel alloc]initWithFrame:CGRectMake(0, 0, 200, 44)];
+    titleLabel.text = self.isChangeOwner ? [L10NHelper getString:CHANGEOWNER_LABEL_TITLE] : GetPluralModuleDisplayName(self.moduleName);
+    
+    if (isCurrentDeviceTypeiPad() && (self.navigationController.modalPresentationStyle == UIModalPresentationFormSheet || self.navigationController.modalPresentationStyle == UIModalPresentationPageSheet))
+    {
+        titleLabel.textColor = [CurTheme() navigationBarTitleColorFormSheet];
+    } else if (!isCurrentDeviceTypeiPad() && self.isForNewUI) {
+        titleLabel.textColor = [CurTheme() primaryTextColor];
+    } else {
+        titleLabel.textColor = [CurTheme() navigationItemTitleColor];
+    }
+    
+    titleLabel.font = [VTFont normalWithStyle:FontStyleMedium];
+    titleLabel.textAlignment = NSTextAlignmentCenter;
+    titleLabel.accessibilityIdentifier = AccessibilityConstant.lookupList_NavBar_TitleViewID;
+    self.navigationItem.titleView = titleLabel;
+}
+
+- (void)willPresentSearchController:(UISearchController *)searchController
+{
+    self.edgesForExtendedLayout = UIRectEdgeAll;
+    self.navigationController.navigationBar.translucent = YES;
+#ifndef EXTN
+    [self.refreshControl setHidden:true];
+#endif
+}
+
+- (void)willDismissSearchController:(UISearchController *)searchController
+{
+    self.edgesForExtendedLayout = UIRectEdgeNone;
+    self.navigationController.navigationBar.translucent = NO;
+#ifndef EXTN
+    [self.refreshControl setHidden:false];
+#endif
+}
+
+-(void)tableView:(UITableView *)tableView viewForTableHeaderForModule:(NSString *)moduleName
+{
+    tableView.tableHeaderView = self.searchViewController.searchBar;
+    [self updateSearchBarPlaceholderInSearchBar:self.searchViewController.searchBar];
+}
+
+
+
+#pragma mark -
+#pragma mark ---- zLoadingView Methods ----
+
+-(void)removeZLoadingView
+{
+    if ([self.zLoadingView superview])
+    {
+        self.zLoadingView.shouldAnimate = NO;
+        [self.zLoadingView removeFromSuperview];
+    }
+}
+-(void)showZLoadingViewWithOffset:(UIEdgeInsets)edgeInsets
+{
+    if (![self.zLoadingView superview])
+    {
+        self.zLoadingView.shouldAnimate = YES;
+        [self.view addSubview:self.zLoadingView];
+        [self.view zAlSetFlexibleBoundsForView:self.zLoadingView withConstrainedInsets:edgeInsets];
+    }
+}
+
+-(UIView*)zNoRecordView
+{
+    UILabel *noDataViewLabel;
+    if (_zNoRecordView == nil) {
+        
+        _zNoRecordView = [[UIView alloc] init];
+        _zNoRecordView.tag = 1111111;
+        [_zNoRecordView styleAsListViewNoDataView];
+        
+        UIImage* img = [CurTheme() noDataImageForModule:self.moduleName];
+        UIImageView * imgView = [[UIImageView alloc]initWithFrame:CGRectZero];
+        imgView.image=img;
+        imgView.tag = TAG_NODATA_IMAGE;
+        imgView.backgroundColor = [UIColor clearColor];
+        imgView.translatesAutoresizingMaskIntoConstraints = NO;
+        [_zNoRecordView addSubview:imgView];
+        
+        [imgView setWidth:img.size.width];
+        [imgView setHeight:img.size.height];
+        [imgView alignTo:LayoutAlignmentCenter];
+        
+        noDataViewLabel = [UILabel new];
+        noDataViewLabel.tag = TAG_NODATA_LABEL;
+        NSString *modulePlName = GetPluralModuleDisplayName(self.moduleName);
+        noDataViewLabel.text = [L10NHelper getString:UI_LABEL_NODATA placeHolders:@[modulePlName]];
+
+        [noDataViewLabel styleAsListViewNoDataLabel];
+        [_zNoRecordView addSubview:noDataViewLabel];
+        
+        self.noDataLabel = noDataViewLabel;
+        
+        self.noDataLabel.accessibilityIdentifier = AccessibilityConstant.lookupList_NoDataLableID;
+        [_zNoRecordView zAlAlignViewView:noDataViewLabel WithAttribute:ZAlLayoutAttributeCenterX andEdgeInsets:UIEdgeInsetsMake(50, 0, 0, 0)];
+        [_zNoRecordView addConstraint:[NSLayoutConstraint constraintWithItem:noDataViewLabel attribute:NSLayoutAttributeTop relatedBy:NSLayoutRelationEqual toItem:imgView attribute:NSLayoutAttributeBottom multiplier:1.0 constant:10.0f]];
+        self.refreshButton = [[UIButton alloc] init];
+    }
+    
+    return _zNoRecordView;
+}
+
+-(void) updateNoRecordViewTheme {
+    UIImageView * imgView = [_zNoRecordView viewWithTag:TAG_NODATA_IMAGE];
+    UILabel *noDataViewLabel = [_zNoRecordView viewWithTag:TAG_NODATA_LABEL];
+    UIImage* img = [CurTheme() noDataImageForModule:self.moduleName];
+    imgView.image=img;
+    [noDataViewLabel styleAsListViewNoDataLabel];
+}
+
+-(BOOL)isSearchingUsers:(BOOL)isSearchTextRemoved{
+    return IsUserOwnerModule(self.moduleName) && (self.searchBar.text.length > 0 || isSearchTextRemoved);
+}
+
+-(void)addNoDataView
+{
+    if([self isSearchingUsers:NO]){
+        self.noDataLabel.text = [L10NHelper getString:SEARCH_FOOTER_NOMATCHINGRESULTS];
+        self.zNoRecordView.hidden = false;
+        [self.searchViewController.view addSubview:self.zNoRecordView];
+        [self.zNoRecordView setTop:0];
+        [self.zNoRecordView setLeft:0];
+        [self.zNoRecordView setRight:0];
+        [self.zNoRecordView setBottom:0];
+    }
+    else{
+        NSString *name = GetPluralModuleDisplayName(self.moduleName);
+        self.noDataLabel.text = [L10NHelper getString:UI_LABEL_NODATA placeHolders:@[name]];
+        self.zTableView.tableFooterView = self.zNoRecordView;
+        [self.zNoRecordView setTop:44];
+        [self.zNoRecordView setRelativeWidth];
+        [self.zNoRecordView setLeft:0];
+        [self.zNoRecordView setRelativeHeight:1 constant:-44];
+        [self.zTableView bringSubviewToFront:self.zTableView.tableHeaderView];
+        self.zTableView.tableFooterView.hidden = false;
+    }
+}
+
+-(void)removeNoDataView:(BOOL)isSearchTextRemoved
+{
+    if([self isSearchingUsers:isSearchTextRemoved]){
+        if(![self.zNoRecordView superview]){
+            return;
+        }
+        [self.zNoRecordView removeFromSuperview];
+    }
+    else{
+        if(!IsUserOwnerModule(self.moduleName) && !self.showLFFooter && ([self.searchViewController isActive] && ![self.filteredArray count] == 0)){
+            self.zTableView.tableFooterView = [UIView new];
+        }
+    }
+}
+    
+
+-(void)fetchDidCompleted
+{
+    EXECUTE_CODE_ON_UI_THREAD_START
+    [self removeZLoadingView];
+    [self removeNoDataView:NO];
+#ifndef EXTN
+    [self.refreshControl endRefresh];
+#endif
+
+    if(IsUserOwnerModule(self.moduleName)){
+        if(([self isSearchingUsers:NO] && ![self.filteredArray count]) ||
+           [self.lookUpListArray count] == 0){
+            [self addNoDataView];
+        }
+    }
+    else{
+        if([self.lookUpListArray count] == 0){
+            [self addNoDataView];
+        }
+    }
+    self.zTableView.dataSource = self;
+    [self.zTableView reloadData];
+    if (![self.searchViewController isActive]) {
+        if([self.lookUpListArray count] > 0) {
+            [self setTableFooterView];
+        }
+        NSString *text;
+        if(self.showLFFooter) {
+            text = [L10NHelper getString:SLF_MESSAGE_FOOTER];
+        }
+        else {
+            text = [L10NHelper getString:LOOKUP_FOOTER_TOTALUSERSDOWNLOADEDCOUNT placeHolders:@[[NSString stringWithFormat:@"%lu",(unsigned long)[self.lookUpListArray count]]]];
+        }
+        [self setTableFooterText:text];
+    }
+    EXECUTE_CODE_ON_UI_THREAD_END
+}
+
+-(void)createNewRecordToAssociate:(UIButton *)sender
+{
+#ifdef EXTN
+#else
+    if (![NSThread isMainThread])
+    {
+        EXECUTE_CODE_ON_UI_THREAD_START
+        
+        [self createNewRecordToAssociate:sender];
+        
+        EXECUTE_CODE_ON_UI_THREAD_END
+    }
+    else
+    {
+        if (self.isOnlineForm) {
+            [self addAndAssociate:sender];
+            return; 
+        }
+        if (self.isUnsyncRecordsHandlingRequired) {
+            NSString *unsyncAlertMessage;
+            NSString *accessibilityID = AccessibilityConstant.alertView_LookUp_QuickCreateRestrictionID;
+            NSMutableSet *featureStrings = [[NSMutableSet alloc] init];
+            for (NSNumber *feature in self.unsyncRecordsHandlingRequiredFeatures)
+            {
+                switch ((UnsyncHandlingRequired)feature.integerValue) {
+                    case FOL:
+                        [featureStrings addObject:[L10NHelper getString:FOL_ALERT_PLACEHOLDER]];
+                        break;
+                    case LookupFilter:
+                        [featureStrings addObject:[L10NHelper getString:SLF_ALERT_PLACEHOLDER]];
+                }
+            }
+
+            if (featureStrings.count > 0) {
+                NSArray *featureStringsArray = [featureStrings allObjects];
+                if (featureStrings.count == 2) {
+                    unsyncAlertMessage = [L10NHelper getString:LOOKUP_ALERT_MESSAGE_QUICKCREATEMULTIPLERESTRICTION placeHolders:featureStringsArray];
+                    accessibilityID = AccessibilityConstant.alertView_LookUp_QuickCreateMultipleRestrictionID;
+                }
+                else if (featureStrings.count == 1) {
+                    unsyncAlertMessage = [L10NHelper getString:LOOKUP_ALERT_MESSAGE_QUICKCREATERESTRICTION placeHolders:featureStringsArray];
+                }
+            }
+            if([featureStrings containsObject:[L10NHelper getString:FOL_ALERT_PLACEHOLDER]]) {
+                [ZCRMLookupFilterTrackingUtil trackFOLQuickCreateRestriction];
+            }
+            else {
+                [ZCRMLookupFilterTrackingUtil trackLFQuickCreateRestriction];
+            }
+            [self trackQuickCreateRestricted];
+            ShowAlertViewWithMessageAndTitle(unsyncAlertMessage, nil, accessibilityID);
+        }
+        else if (self.isValidationRuleInvolved) {
+            [VRCFHelper showVRCFAlertWithOkAction:^(UIAlertAction * _Nonnull) {
+                [self addAndAssociate:nil];
+            } cancelActionBlock:^(UIAlertAction * _Nonnull) {} parentController:nil isAdd: YES];
+        }
+        else {
+            [self addAndAssociate:sender];
+        }
+    }
+#endif
+}
+
+-(void)addAndAssociate:(UIButton *)sender
+{
+#ifdef EXTN
+#else
+    if (![GlobalUtil isNetworkConnectionAvailable] && self.isOnlineForm) {
+        [self trackQuickCreateRestricted];
+        ShowToastWithMessage([L10NHelper getString:LOOKUP_TOAST_NO_INTERNET_ACTION]);
+        return;
+    }
+    if (![NSThread isMainThread])
+    {
+        EXECUTE_CODE_ON_UI_THREAD_START
+        
+        [self addAndAssociate:sender];
+        
+        EXECUTE_CODE_ON_UI_THREAD_END
+    }
+    else if ([self canShowAddForm]) {
+        NSString * entity_id = [RECORD_ADD_PREFIX stringByAppendingFormat:@"%llu",[GetUniqueIdFromResponseTime() longLongValue]];
+        [self trackQuickCreateEvent];
+        [self showAddFormWithId:entity_id];
+    }
+#endif
+}
+
+#ifndef EXTN
+-(BOOL)canShowAddForm {
+    ActionResult *hasAddPermission = [ActionHandler allowAction:ActionCreateRecord module:self.moduleName :nil layout:nil record:nil field:nil isNetworkCheckRequired:false];
+
+    if (!(hasAddPermission.isAllowed)) {
+        if (hasAddPermission.permissionDenied == PermissionDeniedTypeAppPermission) {
+            ShowAlertViewWithMessageAndTitle([L10NHelper getString:APPPERMISSION_ALERT_ACTIONPROHIBITED], [L10NHelper getString:PERMISSION_VALIDATION_TITLE_PERMISSIONDENIED], AccessibilityConstant.alertView_PermissionDeniedID);
+        }
+        else if (hasAddPermission.permissionDenied == PermissionDeniedTypeModulePermission) {
+            ShowAlertViewWithMessageAndTitle([L10NHelper getString:PERMISSION_VALIDATION_MESSAGE_ADDPERMISSIONDENIED placeHolders:@[GetPluralModuleDisplayName(self.moduleName)]], [L10NHelper getString:PERMISSION_VALIDATION_TITLE_PERMISSIONDENIED], AccessibilityConstant.alertView_AddPermissionDeniedID);
+        }
+
+        return NO;
+    }
+    if (![[ZCRMAppData activeModules] containsObject:self.moduleName]) {
+        ShowAlertViewWithMessageAndTitle([L10NHelper getString:VALIDATION_NOTAPPSUPPORTEDMODULE placeHolders:@[GetPluralModuleDisplayName(self.moduleName)]], [L10NHelper getString:PERMISSION_VALIDATION_TITLE_PERMISSIONDENIED], AccessibilityConstant.alertView_NotAppSupportedModuleID);
+        return NO;
+    }
+    if ([DataStorageUtil checkAndShowDataStorageLimitReachedAlert]) {
+        return NO;
+    }
+    return YES;
+}
+
+-(void)showAddFormWithId:(NSString *)entity_id {
+    ZCRMMetadata *metadata = [ZCRMMetadata instanceForModule:self.moduleName];
+    ZCRMDetailViewController * addViewController = [[ZCRMDetailViewController alloc] init];
+    addViewController.isOnlineForm = self.isOnlineForm;
+    addViewController.isStateRestorationSupported = self.isStateRestorationSupported;
+    addViewController.isAddAndAssociate = YES;
+    addViewController.isFromBlueprint = self.isFromBlueprint;
+    addViewController.isAddController = YES;
+    addViewController.addRecordTrackingSource = [[EventTrackingSource alloc] initWithLegacyEventSource:EventSourceLookupList newEventSource:CRMEventSource.lookupList];
+    NSMutableArray<NSString*>* lookupPath = [self.existingLookupPath mutableCopy];
+    [lookupPath addObject:self.moduleName];
+    addViewController.lookupPath = lookupPath;
+    addViewController.delegate = self;
+    addViewController.isQuickCreate = YES;
+    addViewController.moduleName = self.moduleName;
+    NSMutableDictionary * crmEntity = [NSMutableDictionary dictionary];
+
+    [crmEntity setValue:entity_id forKey:GlobalUtil.recordId];
+    quickCreateEntityID = entity_id;
+    NSString* ownerIdKey = [ZCRMWorkerClass getDefaultOwneridLabel:self.moduleName];
+    crmEntity[ownerIdKey] = [UserManager loginUserId];
+    crmEntity[RECORD_OWNER] = [UserManager loginUserName];
+    if (IsMeetingsModule(self.moduleName)) {
+        [ZCRMWorkerClass updateFromAndToFields:crmEntity fromDate:[NSDate date] withFromComponents:nil toDate:nil withToComponents:nil andIsForAddForm:YES];
+    }
+    if (IsContactsModule(self.moduleName)) {
+        addViewController.isQuickCreateFromReportingHierarchyField = [self.fieldLabel isEqualToString:CONTACT_REPORTING_TO_CONTACT_ID]?YES:NO;
+        if(addViewController.isQuickCreateFromReportingHierarchyField && ![metadata isReadOnlyField:self.relatedField]){
+            crmEntity[self.relatedField] = self.relatedRecordID;
+            crmEntity[[metadata lookupColumnNameForFieldLabel:self.relatedField]] = self.relatedRecordName;
+        }
+    }
+
+    addViewController.crmModuleEntity = crmEntity;
+    [addViewController.updatedValuesDict addEntriesFromDictionary:crmEntity];
+
+    ZCRMBaseDetailViewController *viewController = [BaseFormViewAssembler getBaseDetailViewControllerFor:addViewController.moduleName with:addViewController];
+    UINavigationController * nav = [[UINavigationController alloc] initWithRootViewController:viewController];
+    nav.view.layer.masksToBounds = YES;
+
+    if (isCurrentDeviceTypeiPad()) {
+        nav.modalPresentationStyle = UIModalPresentationFormSheet;
+    } else {
+        nav.modalPresentationStyle = UIModalPresentationFullScreen;
+    }
+    [self.navigationController presentViewController:nav animated:YES completion:nil];
+}
+#endif
+
+-(void)returnLookupDictToPreviousDetail:(NSDictionary*)lookupDic
+{
+    ZCRMModule *module = [ZCRMModuleManager moduleInstanceForModuleName:self.moduleName];
+    #ifndef EXTN
+    if (lookupDic.count == 1) {
+        NSString *title = [L10NHelper getString:ERROR_TITLE_LOOKUP_FAILED];
+        NSString *message = [L10NHelper getString:ERROR_MESSAGE_LOOUP_NO_ACCESS placeHolders: @[module.nameSingular]];
+        ShowAlertViewWithMessageAndTitle(message, title, nil);
+        return;
+    }
+    if (![GlobalUtil isNewRecordID:lookupDic[RECORD_ID]] && [ZCRMReviewProcessUtil isRecordUnderReviewWithCrmDict:lookupDic]) {
+        NSString *title = [L10NHelper getString:ERROR_TITLE_LOOKUP_FAILED];
+        NSString *message = [L10NHelper getString:ERROR_MESSAGE_LOOKUP_UNDER_REVIEW placeHolders: @[module.nameSingular]];
+        ShowAlertViewWithMessageAndTitle(message, title, nil);
+        return;
+    }
+    #endif
+
+    NSDictionary * lookupDict = [self lookUpDictForObject:lookupDic];
+    if (self.isFromAttachment)
+    {
+        [self.delegate editingOfLookUpFinishedWithDict:lookupDict withLookupRecordValue:lookupDic];
+        [self.navigationController popToRootViewControllerAnimated:YES];
+    }
+#ifdef EXTN
+#else
+    else if(!self.listOfActiveProductsNeeded)
+    {
+        [self.delegate editingOfLookUpFinishedWithDict:lookupDict withLookupRecordValue:lookupDic];
+        [self.navigationController popViewControllerAnimated:YES];
+    }
+    else
+    {
+        [self pushToInventoryProductViewControllerWithManObj:lookupDict];
+    }
+#endif
+}
+
+
+-(void)updateSearchResultsForSearchController:(UISearchController *)searchController
+{
+    self.filteredArray = nil;
+    self.searchText = [searchController.searchBar.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    if (![GlobalUtil isEmpty:self.searchText]) {
+        [self filterContentForSearchText:self.searchText fromServer:NO withCompletionBlock:^ {
+            [self.zTableView reloadData];
+            [self changeNoDataText:@""];
+            [self checkAndPerformServerSearch:self.searchText];
+            self.zTableView.tableFooterView = self.searchFooterLabel;
+        }];
+    }
+    else {
+        self.zTableView.tableFooterView.hidden = YES;
+        [self.zTableView reloadData];
+        [self changeNoDataText:@""];
+    }
+    
+}
+
+-(void)serverSearch
+{
+#ifdef EXTN
+#else
+        if((self.serverSearchFields.count>0 || [GlobalUtil isUnSupportedModuleInAppWithModuleName:self.moduleName]) && [VTNetUtil isNetworkConnectionAvailable])
+        {
+            [self showSearchFooterLabelWithString:[L10NHelper getString:SEARCH_FOOTER_SEARCHINGINSERVER]];
+            [self performSearchInServer];
+        }
+    
+#endif
+}
+
+#pragma mark -
+#pragma mark ---- UITableView Delegate & DataSource Methods ----
+
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
+{
+    if ([self.searchViewController isActive])
+    {
+        return 0.1f;
+    }
+    return 0;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
+{
+    return 1;
+}
+
+-(NSInteger) tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    if ([self.searchViewController isActive])
+    {
+        return [self.filteredArray count];
+    }
+    return ([self canShowNoneOption])   ? self.lookUpListArray.count+1   : self.lookUpListArray.count;
+
+}
+
+-(UITableViewCell*)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    static NSString *CellIdentifier = @"Normal Cell";
+    ZMultiplePurposeTableViewCell *cell = (ZMultiplePurposeTableViewCell*)[tableView dequeueReusableCellWithIdentifier:CellIdentifier];
+    if (!cell)
+    {
+        cell = [[ZMultiplePurposeTableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:CellIdentifier];
+    }
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    [self tableView:tableView reinitializeCell:cell atIndexPath:indexPath];
+    [self tableView:tableView configureCell:cell atIndexPath:indexPath];
+    cell.backgroundColor = [CurTheme() customViewsListingCellBackgroundColor];
+    cell.tintColor = [CurTheme() themeActionItemColor];
+    return cell;
+}
+
+-(void) tableView:(UITableView*)tableView reinitializeCell:(ZMultiplePurposeTableViewCell *) cell atIndexPath:(NSIndexPath *) indexPath
+{
+    cell.textLabel.text = nil;
+    for (UIView *subVieww in cell.contentView.subviews)
+    {
+        if (subVieww.tag == 100)
+        {
+            [subVieww removeFromSuperview];
+        }
+    }
+    cell.cellType = self.isSingleDisplayField ? ZTableViewCellTypeSingleRow : ZTableViewCellTypeDoubleRow;
+    cell.firstRowLeftText = nil;
+    cell.firstRowLeftTextFont = nil;
+    cell.firstRowLeftTextColor = nil;
+    cell.firstRowLeftAttributedText = nil;
+    
+    cell.secondRowText = nil;
+    cell.secondRowTextFont = nil;
+    cell.secondRowTextColor = nil;
+    cell.secondRowAttributedText = nil;
+    cell.thirdRowText = nil;
+    cell.thirdRowTextFont = nil;
+    cell.thirdRowTextColor = nil;
+    cell.isNoneCell = false;
+    cell.recordId = nil;
+    cell.moduleName = nil;
+    cell.otherDetails = nil;
+    cell.firstRowPicklistView = nil;
+    cell.secondRowPicklistView = nil;
+    [cell.firstRowPicklistView removeFromSuperview];
+    [cell.secondRowPicklistView removeFromSuperview];
+    cell.zContentInset = UIEdgeInsetsMake(0, 0, 0, 40);
+    
+    [cell shiftLeftMargin:40];
+}
+
+-(CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (self.isSingleDisplayField)
+    {
+        return 46;
+    }
+    return 57;
+}
+
+-(NSDictionary *)tableView:(UITableView *)tableView selectManObjAtIndexPath:(NSIndexPath *)indexPath
+{
+    NSDictionary* manObj = nil;
+    if ([self.searchViewController isActive])
+    {
+        manObj = [self.filteredArray objectAtIndex:indexPath.row];
+    }
+    else if ([self canShowNoneOption])
+    {
+        if (indexPath.row == 0) {
+            return nil;
+        }
+        manObj = [self.lookUpListArray objectAtIndex:indexPath.row-1];
+    }
+    else
+    {
+        manObj = [self.lookUpListArray objectAtIndex:indexPath.row];
+    }
+    return manObj;
+}
+
+-(NSString *)getFormattedString:(NSDictionary *)manObj forLabel:(NSString *)fieldLabel
+{
+    NSMutableDictionary* mutableManObj = [manObj mutableCopy];
+    NSString* fieldType = [self.metaData fieldTypeForFieldLabel:fieldLabel];
+    NSString* fieldValue = nil;
+    NSString* layoutId = [FormulaHelper getDynamicFomulaLayoutIDIn:self.metaData.moduleName crmColumnName:fieldLabel];
+    if (layoutId)
+    {
+        DynamicFormulaExecutor *dynamicFormulaExecutor = [[DynamicFormulaExecutor alloc] initWithModuleName:self.moduleName layoutId:layoutId recordDict:mutableManObj];
+        id formulaValue = [dynamicFormulaExecutor executeDynamicFormulaForRecordWithCrmColumnName:fieldLabel];
+        
+        [mutableManObj setObject:formulaValue forKey:fieldLabel];
+    }
+    
+    if ([fieldType isEqualToString:FIELD_DATE])
+    {
+        fieldValue = GetDateValueWithDefaultFormat(mutableManObj, fieldLabel);
+    }
+    else if(IsMeetingsModule(self.moduleName) && [fieldLabel isEqualToString:EVENT_REMINDER])
+    {
+        NSString *timeString = [ZCRMDetailControllerUtil getReminderDisplayString:mutableManObj module:self.moduleName layoutID:mutableManObj[RECORD_LAYOUTID]];
+        fieldValue = timeString;
+    }
+    else if(IsCallsModule(self.moduleName) && [fieldLabel isEqualToString:CALL_REMINDER])
+    {
+        NSString *timeString =[ZCRMDetailControllerUtil getReminderDisplayStringForManagedObject:mutableManObj forModule:self.moduleName forLayoutId:mutableManObj[RECORD_LAYOUTID]];
+        fieldValue=timeString;
+    }
+    else if ([fieldType isEqualToString:FIELD_DATETIME])
+    {
+        if (IsMeetingsModule(self.moduleName))
+        {
+            if ([fieldLabel isEqualToString:EVENT_FROM] || [fieldLabel isEqualToString:EVENT_TO])
+            {
+                fieldValue = GetDefaultDateTimeValueWithFormat(mutableManObj, fieldLabel, @"EventTime");
+            }
+            else if ([fieldLabel isEqualToString:EVENT_CHECK_IN_TIME])
+            {
+                fieldValue = GetDefaultDateTimeValueWithFormat(mutableManObj, fieldLabel, EVENT_LISTING_CHECKIN_TIME_FORMAT);
+            }
+            else
+            {
+                fieldValue = GetDefaultDateTimeValueWithDefaultFormat(mutableManObj, fieldLabel);
+            }
+        }
+        else if (IsCallsModule(self.moduleName) && [fieldLabel isEqualToString:CALL_START_DATE_TIME]) {
+            fieldValue = GetDefaultDateTimeValueWithFormat(mutableManObj, fieldLabel, @"Time");
+        }
+        else {
+            fieldValue = GetDefaultDateTimeValueWithDefaultFormat(mutableManObj, fieldLabel);
+        }
+    }
+    else if ([fieldType isEqualToString:FIELD_CURRENCY])
+    {
+        fieldValue = GetCurrencyValue(mutableManObj[fieldLabel], mutableManObj[RECORD_CURRENCY], self.moduleName, fieldLabel);
+    }
+    else if([fieldType isEqualToString:FIELD_PICKLIST] && [mutableManObj[fieldLabel] isEqualToString:PICKLIST_ACTUAL_VALUE_NONE])
+    {
+        fieldValue = @"";
+    }
+    else if ([fieldType isEqualToString:FIELD_BOOLEAN]) {
+        if ([mutableManObj[fieldLabel] boolValue])
+        {
+            fieldValue = [@"✓" lowercaseString];
+        }
+        else
+        {
+            fieldValue = STRING_EMPTY;
+        }
+    }
+    else if([fieldLabel isEqualToString:ACTIVITY_WHOID] && IsLeadsModule(mutableManObj[ACTIVITY_SEMODULE]))
+    {
+        NSString *lookupField = [self.metaData lookupColumnNameForFieldLabel:ACTIVITY_WHATID];
+        fieldValue = mutableManObj[lookupField];
+    }
+    else if([fieldLabel isEqualToString:ACTIVITY_WHATID] && (IsLeadsModule(mutableManObj[ACTIVITY_SEMODULE]) || IsContactsModule(mutableManObj[ACTIVITY_SEMODULE])))
+    {
+        fieldValue = STRING_EMPTY;
+    }
+    else if([fieldLabel isEqualToString:USER_FULL_NAME_LABEL])
+    {
+        fieldValue = [UserManager getUserFullNameFromUserDetailsOrUserId:mutableManObj userName:STRING_EMPTY];
+    }
+    
+    else if ([self.metaData isOwnerLookupField:fieldLabel] || [self.metaData isUserLookupField:fieldLabel])
+    {
+        NSString *lookupFieldLabel = [self.metaData lookupFieldLabelForFieldLabel:fieldLabel];
+        fieldValue = [UserManager getUserFullNameFromUserDetailsOrUserId:mutableManObj[fieldLabel] userName:mutableManObj[lookupFieldLabel]];
+    }
+    else if([fieldLabel isEqualToString:RECORD_LAYOUTID] || [fieldType isEqualToString:FIELD_LOOKUP])
+    {
+        ZCRMBaseFieldMetadata *layoutFieldMeta = [self.metaData fieldData:fieldLabel];
+        fieldValue = mutableManObj[layoutFieldMeta.lookupColumnName];
+    }
+    else if([fieldLabel isEqualToString:FULL_NAME_LABEL])
+    {
+        fieldValue = [ZCRMDetailControllerUtil getFullNameForModuleObj:mutableManObj moduleName:self.moduleName];
+    }
+    else if([self.metaData isNumberSeparatorSupportedField:fieldLabel]) {
+        fieldValue = [ZCRMDetailControllerUtil getValueForNumberField:fieldLabel whileEditing:false withEntity:manObj meta:self.metaData];
+    } else if([fieldType isEqualToString: ADDRESS_FIELD]) {
+        fieldValue = manObj[fieldLabel];
+        fieldValue = [fieldValue stringByReplacingOccurrencesOfString:@",\n" withString:@", "];
+    }
+    else {
+        if(mutableManObj[fieldLabel])
+        {
+            fieldValue = [NSString stringWithFormat:@"%@", mutableManObj[fieldLabel]];
+        }
+        else
+        {
+            fieldValue = @" ";
+        }
+    }
+    if ([GlobalUtil isEmpty:fieldValue])
+    {
+        if([fieldType isEqualToString:FIELD_PICKLIST]) {
+            fieldValue = STRING_EMPTY;
+        }else{
+            fieldValue = STRING_HYPHEN;
+        }
+    }
+    return fieldValue;
+}
+
+-(NSArray*)getDisplayValuesFor:(NSDictionary*)manObj
+{
+    NSMutableArray *displayValues = [NSMutableArray new];
+    for (int i =0; i<2; i++)
+    {
+        if (i < self.displayFields.count)
+        {
+            displayValues[i] = [self getFormattedString:manObj forLabel:self.displayFields[i]];
+        }
+        else
+        {
+            displayValues[i] = STRING_HYPHEN;
+        }
+    }
+    return [displayValues copy];
+}
+
+/*
+ * A field is included if:
+ * - It is **not** a rollup summary field.
+ * - It is **not** a dynamic formula field, or
+ * - If it is a dynamic formula field, all involved fields must have the necessary permissions.
+ * - If the fields list is empty, default fields will be used as replacements.
+ */
+-(void)filterAndAddEligibleFields {
+    NSMutableArray *fields = [NSMutableArray new];
+    for (int i=0; i<self.displayFields.count; i++) {
+        ZCRMBaseFieldMetadata* fieldMeta = [self.metaData.baseMetadata baseFieldMetaDataForCrmColumnName:self.displayFields[i]];
+        if (![fieldMeta isRollupSummaryField] &&
+            (![FormulaHelper isDynamicFormulaIn:self.metaData.moduleName crmColumnName:self.displayFields[i]] ||
+             [FormulaHelper hasAllFormulaInvolvedFieldsIn:self.metaData.moduleName crmColumnName:self.displayFields[i] layoutId:nil])) {
+            [fields addObject:self.displayFields[i]];
+        }
+    }
+    if([GlobalUtil isEmpty:fields]) {
+        NSArray *defaultFields = [ZCRMSettings defaultValueForFieldName:DISPLAY ofModule:self.moduleName];
+        fields[0] = defaultFields[0];
+        fields[1] = defaultFields[1];
+    }
+    self.displayFields = fields;
+}
+
+-(void)tableView:(UITableView *)tableView configureCell:(ZMultiplePurposeTableViewCell *) cell atIndexPath:(NSIndexPath *) indexPath
+{
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    NSString* entityId = nil;
+    BOOL isSelected = NO;
+    NSArray *displayValues;
+    cell.firstRowLeftTextFont = [VTFont normal];
+    cell.firstRowLeftTextColor = [CurTheme() primaryTextColor];
+    cell.secondRowTextFont = [VTFont small];
+    cell.secondRowTextColor =[CurTheme() secondaryTextColor];
+    
+    cell.moduleName = self.moduleName;
+    if (indexPath.row == 0 && [self canShowNoneOption]) {
+        cell.cellType = ZTableViewCellTypeSingleRow;
+        cell.firstRowLeftText = [L10NHelper getString:MODULESETTINGS_DISPLAYSEARCH_LABEL_NONEFIELD];
+        cell.secondRowText = @"";
+        cell.accessibilityIdentifier = [AccessibilityConstant lookupList_CellID:@"000"];
+
+        cell.isNoneCell = true;
+        if([GlobalUtil isEmpty:self.idOfObjectToBeSelected])
+        {
+            [self setCellAsSelected:cell];
+        }
+        return;
+    }
+    
+    NSDictionary* manObj = [self tableView:tableView selectManObjAtIndexPath:indexPath];
+    cell.otherDetails = manObj;
+    if (IsUserOwnerModule(self.moduleName))
+    {
+        entityId = [manObj valueForKey:[UserDBConstants userID]];
+    }
+    else
+    {
+        entityId = [manObj valueForKey:GlobalUtil.recordId];
+    }
+    displayValues = [self getDisplayValuesFor:manObj];
+    isSelected = [self.selectedObjects containsObject:entityId];
+    
+    cell.firstRowLeftText = displayValues[0];
+    cell.secondRowText = displayValues[1];
+    if([entityId isEqualToString:self.idOfObjectToBeSelected] || isSelected)
+    {
+        isSelected = YES;
+        [self setCellAsSelected:cell];
+    }
+    
+    if ([self.searchViewController isActive])
+    {
+        NSMutableAttributedString *attributedString;
+        NSMutableDictionary *attributesDict;
+        NSRange range = [cell.firstRowLeftText localizedStandardRangeOfString:self.searchText];
+        
+        //first row
+        if (range.location != NSNotFound)
+        {
+            attributesDict = [@{ NSFontAttributeName : cell.firstRowLeftTextFont, NSForegroundColorAttributeName : cell.firstRowLeftTextColor } mutableCopy];
+            attributedString = [[NSMutableAttributedString alloc] initWithString:cell.firstRowLeftText attributes:attributesDict];
+            attributesDict[NSFontAttributeName] = [VTFont normalWithStyle:FontStyleBold];
+            !isSelected ? attributesDict[NSForegroundColorAttributeName] = [CurTheme() attributedTextHighlightColor] : nil;
+            [attributedString addAttributes:attributesDict range:range];
+            cell.firstRowLeftAttributedText = [attributedString copy];
+        }
+        
+        //second row
+        range = [cell.secondRowText localizedStandardRangeOfString:self.searchText];
+        if (range.location != NSNotFound)
+        {
+            attributesDict = [@{ NSFontAttributeName : cell.secondRowTextFont, NSForegroundColorAttributeName : cell.secondRowTextColor } mutableCopy];
+            attributedString = [[NSMutableAttributedString alloc] initWithString:cell.secondRowText attributes:attributesDict];
+            attributesDict[NSFontAttributeName] = [VTFont smallWithStyle:FontStyleBold];
+            !isSelected ? attributesDict[NSForegroundColorAttributeName] = [CurTheme() attributedTextHighlightColor] : nil;
+            [attributedString addAttributes:attributesDict range:range];
+            cell.secondRowAttributedText = [attributedString copy];
+        }
+    }
+    
+    if ([[self.relatedRecordsArray valueForKey:self.metaData.primaryFieldLabel] containsObject:manObj[self.metaData.primaryFieldLabel]] && ![self.fieldLabel isEqualToString:CONTACT_REPORTING_TO_CONTACT_ID])
+    {
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
+        button.frame = CGRectMake(CGRectGetMaxX(cell.contentView.frame)-35, CGRectGetMidY(cell.contentView.frame)-10, 20, 20);
+        [button setImage: [CurTheme() formsRelatedIconImage] forState:UIControlStateNormal];
+        [cell.contentView addSubview:button];
+        button.tag = 100;
+        [button setTranslatesAutoresizingMaskIntoConstraints:NO];
+        [button setViewSize:CGSizeMake(20, 20)];
+        [button setCenterY];
+        [button setRight:-13.0];
+    }
+    cell.accessibilityIdentifier = [AccessibilityConstant lookupList_CellID:entityId];
+    [cell setNeedsLayout];
+}
+
+-(BOOL)isInventoryLookupLineItem{
+    return ([self.fieldLabel isEqualToString:SALESORDER_QUOTE_ID] &&
+            IsSalesOrdersModule(self.parentModuleName) && IsQuotesModule(self.moduleName)) ||
+            ([self.fieldLabel isEqualToString:INVOICE_SO_ID] &&
+             IsInvoicesModule(self.parentModuleName) && IsSalesOrdersModule(self.moduleName));
+}
+
+-(NSIndexPath *)tableView:(UITableView *)tableView willSelectRowAtIndexPath:(NSIndexPath *)indexPath{
+#ifdef EXTN
+    return indexPath;
+#else
+    id record = [self tableView:tableView selectManObjAtIndexPath:indexPath];
+
+//    if (self.isOnlineForm && IsNewRecordId(recordId)) {
+//        [OnlineLookupUtil showUnsyncedLookupAlertWithOver:self onSyncNow:^{
+//            [self showEditFormWithEntityId:recordId];
+//        } onCancel:nil];
+//        return nil;
+//    }
+
+//    if (self.isValidationRuleInvolved && !self.isOnlineForm) {
+//        if (IsNewRecordId(recordId)) {
+//            [VRCFHelper showVRCFAlertWithOkAction:^(UIAlertAction * _Nonnull) {
+//                [self handleSelectionOfRecord:record atIndexPath:indexPath];
+//            } cancelActionBlock:^(UIAlertAction * _Nonnull) {} parentController:nil isAdd: NO];
+//            return nil;
+//        } else {
+//            return indexPath;
+//        }
+//    }
+    if([self isInventoryLookupLineItem]){
+        if([GlobalUtil isEmpty:record]) {
+            return indexPath;
+        }
+        NSDictionary* crmDict = [ZCRMDetailControllerUtil getRecordForEntityId:record[RECORD_ID] inModule:self.moduleName selectColumns:nil];
+        NSString *subformApiName = [ZCRMDetailControllerUtil getLineItemSubformFieldApiNameForModule:self.moduleName];
+        NSString *subformCrmColumn = [self.metaData fieldCRMColumnNameForAPIName:subformApiName];
+
+        NSDictionary *subformRecordDict = [ZCRMDetailControllerUtil fetchSubformRecords:record[RECORD_ID]
+                                             layoutId:crmDict[RECORD_LAYOUTID]
+                                               module:self.moduleName
+                                        subformColumn:subformCrmColumn];
+
+        if(![ZCRMDetailControllerUtil isInventoryLineItemsDownloaded:self.moduleName subformRecordsDict:subformRecordDict] &&
+           ![VTNetUtil isNetworkConnectionAvailable]) {
+            [ZCRMDetailControllerUtil showLineItemsMissingAlert:self.moduleName crmEntity:crmDict controller:self];
+            return nil;
+        }
+    }
+    return indexPath;
+#endif
+}
+
+-(void)handleSelectionOfRecord:(NSDictionary *)record atIndexPath:(NSIndexPath *)indexPath {
+    id manObj = record;
+    if([self.searchViewController isActive])
+    {
+        [((UIApplication*)APPLICATION) setStatusBarStyle:UIStatusBarStyleLightContent];
+    }
+    if (self.isFromAttachment)
+    {
+        [self.zTableView deselectRowAtIndexPath:indexPath animated:YES];
+        [self.delegate editingOfLookUpFinishedWithDict:[self lookUpDictForObject:manObj] withLookupRecordValue:record];
+        if (!self.isFromShareAttachment)
+        {
+            [self.navigationController popToRootViewControllerAnimated:YES];
+        }
+        return;
+    }
+    [self actionsForMultipleOptionWhileSelectingManagedObject:manObj];
+
+    if([self.fieldLabel isEqual:EVENT_PARTICIPANTS])
+    {
+        NSMutableArray *multiSelectArray;
+        if(!self.selectedObjects)
+        {
+            multiSelectArray = [NSMutableArray new];
+        }
+        else
+        {
+            multiSelectArray = [self.selectedObjects mutableCopy];
+        }
+        NSString *primaryValue, *participantType,*displayName1,*email,*selectedValue;
+        
+        primaryValue = [self.moduleName isEqualToString:USERS_MODULE]? manObj[[UserDBConstants userID]]:manObj[GlobalUtil.recordId];
+        
+        participantType = IsContactsModule(self.moduleName) ? EVENT_INVITEE_TYPE_CONTACT : IsLeadsModule(self.moduleName) ? EVENT_INVITEE_TYPE_LEAD : EVENT_INVITEE_TYPE_USER;
+        participantType = [GlobalUtil isEmpty:participantType]?STRING_EMPTY:participantType;
+        if(IsContactsModule(self.moduleName) || IsLeadsModule(self.moduleName)){
+            displayName1 = [self getFullNameForModuleObj:manObj moduleName:self.moduleName];
+        }
+        else if ([self.moduleName isEqualToString:USERS_MODULE]){
+            displayName1 = [UserManager getUserFullNameFromUserDetailsOrUserId:manObj userName:STRING_EMPTY];
+        }
+        displayName1 = [GlobalUtil isEmpty:displayName1]?STRING_EMPTY:displayName1;
+        email = IsContactsModule(self.moduleName) || IsLeadsModule(self.moduleName) ? manObj[CONTACT_EMAIL] : [self.moduleName isEqualToString:USERS_MODULE] ? manObj[[UserDBConstants email]] : STRING_EMPTY;
+        email = [GlobalUtil isEmpty:email]?STRING_EMPTY:email;
+        selectedValue = primaryValue;
+        
+        NSDictionary *participant = @{EVENT_INVITEE_RECORD_ID:primaryValue,EVENT_INVITEE_RECORD_NAME:displayName1,EVENT_INVITEE_RECORD_EMAIL:email,EVENT_INVITEE_RECORD_TYPE:participantType};
+        if([multiSelectArray containsObject:selectedValue])
+        {
+            [multiSelectArray removeObject:selectedValue];
+        }
+        else
+        {
+            [multiSelectArray addObject:selectedValue];
+            if(!participantDict)
+            {
+                participantDict = [NSMutableDictionary new];
+            }
+            [participantDict setObject:participant forKey:selectedValue];
+        }
+        self.selectedObjects = multiSelectArray;
+        
+        [self.zTableView reloadData];
+    }
+    else if (self.isMultipleAssociatedLookup)
+    {
+        [self.zTableView reloadData];
+        return;
+    }
+
+    NSString* lookupEntityId;
+    
+    if (IsUserOwnerModule(self.moduleName))
+    {
+        lookupEntityId = manObj[[UserDBConstants userID]];
+    }
+    else
+    {
+        lookupEntityId = manObj[GlobalUtil.recordId];
+    }
+    
+    manObj = [self lookUpDictForObject:manObj];
+    
+    if(self.listOfActiveProductsNeeded)
+    {
+        [self pushToInventoryProductViewControllerWithManObj:manObj];
+        return;
+    }
+    else if(![self.fieldLabel isEqual:EVENT_PARTICIPANTS])
+    {
+        if(self.isChangeOwner && self.parentModuleName){
+            if ([lookupEntityId isEqualToString:self.currOwnerInfo[RECORD_OWNER_ID]]) {
+                [self.delegate editingOfLookUpFinishedWithDict:manObj withLookupRecordValue:record];
+                [self cancelButtonClicked];
+                return;
+            }
+            self.idOfObjectToBeSelected = lookupEntityId;
+            [self saveCurrentState];
+            [self.zTableView reloadData];
+            [self showChangeOwnerViewController];
+        }
+        else {
+            #ifndef EXTN
+            BOOL isUnsyncedRecord = [GlobalUtil isRecordYetToSyncWithEntityID:lookupEntityId moduleName:self.moduleName];
+            if (isUnsyncedRecord) {
+                [self trackUnsyncRecordSelected];
+            }
+            __weak ZCRMLookUpListViewController *_self = self;
+            if (isUnsyncedRecord && (self.isOnlineForm || [GlobalUtil isNetworkConnectionAvailable])) {
+                self.idOfObjectToBeSelected = nil;
+                [self.zTableView reloadData];
+
+                [OnlineLookupUtil showUnsyncedLookupAlertWithOver:self onSyncNow:^{
+                    [_self showEditFormWithEntityId:lookupEntityId];
+                } onCancel:nil];
+            } else if (self.isValidationRuleInvolved && IsNewRecordId(lookupEntityId)) {
+                [VRCFHelper showVRCFAlertWithOkAction:^(UIAlertAction * _Nonnull) {
+                    [_self.delegate editingOfLookUpFinishedWithDict:manObj withLookupRecordValue:record];
+                    [_self.navigationController popViewControllerAnimated:YES];
+                } cancelActionBlock:^(UIAlertAction * _Nonnull) {
+                    _self.idOfObjectToBeSelected = nil;
+                    [_self.zTableView reloadData];
+                } parentController:nil isAdd: NO];
+            } else {
+                [self.delegate editingOfLookUpFinishedWithDict:manObj withLookupRecordValue:record];
+                [self.navigationController popViewControllerAnimated:YES];
+            }
+            #else
+            [self.delegate editingOfLookUpFinishedWithDict:manObj withLookupRecordValue:record];
+            [self.navigationController popViewControllerAnimated:YES];
+            #endif
+         }
+    }
+}
+
+- (void)tableView:(UITableView  *)tableView didSelectRowAtIndexPath:(NSIndexPath  *)indexPath
+{
+    id manObj = [self tableView:tableView selectManObjAtIndexPath:indexPath];
+    [self handleSelectionOfRecord:manObj atIndexPath:indexPath];
+}
+
+
+-(void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath{
+    if(![GlobalUtil isUsersModule:self.moduleName] && !IsOwnersModule(self.moduleName)){
+        return;
+    }
+    if([self.searchViewController isActive]){
+        return;
+    }
+    if(indexPath.row == [self.lookUpListArray count] - 1){
+        [self downloadMoreUsers];
+    }
+}
+
+-(UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section{
+    if(!IsUserOwnerModule(self.moduleName) || self.searchViewController.isActive){
+        return  nil;
+    }
+    UIEdgeInsets insets = self.zTableView.separatorInset;
+    CGFloat width = self.zTableView.bounds.size.width - insets.left - insets.right;
+    CGRect sepFrame = CGRectMake(insets.left,  -0.5, width, 0.5);
+    UIView *view = [[UIView alloc] initWithFrame:sepFrame];
+    [view setBackgroundColor:[CurTheme() tableViewSeparatorColor]];
+    return view;
+}
+
+-(CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section{
+    if(!IsUserOwnerModule(self.moduleName)|| self.searchViewController.isActive){
+        return 0;
+    }
+    return 0.5;
+}
+
+-(void) setCellAsSelected:(ZMultiplePurposeTableViewCell*)cell
+{
+    UIImage *checkMarkImage = [CurTheme() themeColorCheckMarkImage];
+    UIImageView *checkmarkImageview = [[UIImageView alloc] initWithImage:checkMarkImage];
+    checkmarkImageview.tag = 100;
+    checkmarkImageview.translatesAutoresizingMaskIntoConstraints = NO;
+    [cell.contentView addSubview:checkmarkImageview];
+    [checkmarkImageview setLeft:10.0];
+    [checkmarkImageview setCenterY];
+    [checkmarkImageview setWidth:checkMarkImage.size.width];
+    [checkmarkImageview setHeight:checkMarkImage.size.height];
+    checkmarkImageview.accessibilityIdentifier = AccessibilityConstant.lookupList_CheckMarkImageID;
+    cell.firstRowLeftTextColor = cell.secondRowTextColor = [CurTheme() themeActionItemColor];
+}
+
+-(void)updateSelectButton{
+    [self.navigationItem setRightBarButtonItem:self.selectButton animated:YES];
+}
+
+-(void) actionsForMultipleOptionWhileSelectingManagedObject:(id) managedObject
+{
+    
+}
+
+-(void)pushToInventoryProductViewControllerWithManObj:(NSDictionary *)manObj
+{
+#ifdef EXTN
+#else
+    ZCRMInventoryProductDetailViewController *quoteProductDetailViewController = [[ZCRMInventoryProductDetailViewController alloc] init];
+    quoteProductDetailViewController.metaDataFetchedResultsObj=nil;
+    quoteProductDetailViewController.quoteProductDetailViewControllerDelegate = self.inventoryProductDict[@"inventoryDelegate"];
+    quoteProductDetailViewController.isAddController= YES;
+    quoteProductDetailViewController.currencyMetaData = self.inventoryProductDict[@"currencyValue"];
+    quoteProductDetailViewController.moduleName= self.inventoryProductDict[KEY_MODULE_NAME];
+    quoteProductDetailViewController.isEditing= YES;
+    quoteProductDetailViewController.currencyStr = self.inventoryProductDict[@"currencyStr"];
+    quoteProductDetailViewController.relatedModuleEntityId= self.inventoryProductDict[@"relatedModuleEntityId"];
+    quoteProductDetailViewController.crmModuleEntity = [self createProductDictWithInventoryProductInfo:manObj];
+    quoteProductDetailViewController.isRecordInReview = self.isRecordInReview;
+    [self.navigationController pushViewController:quoteProductDetailViewController animated:YES];
+#endif
+}
+
+
+#pragma mark -
+#pragma mark ---- Lookup Dict Creation ----
+
+
+- (NSDictionary *) lookUpDictForObject:(NSDictionary*)obj
+{
+    NSMutableDictionary* lookUpDict = [NSMutableDictionary new];
+    NSString* lookupModule = self.moduleName;
+    NSString* lookupEntityId;
+    NSString* keyValue;
+    
+    if(IsOwnersModule(self.moduleName) || [GlobalUtil isUsersModule:self.moduleName]) {
+        return [self getUserLookupDictForUser:obj];
+    }
+    else
+    {
+        NSString* lookupFieldLabel = self.fieldLabel;
+        lookupEntityId = [obj valueForKey:GlobalUtil.recordId];
+        if(IsCampaignsModule(self.moduleName)){
+            keyValue = [ZCRMDetailControllerUtil getValueForFieldLabel:CAMPAIGN_NAME whileEditing:NO withEntity:obj onModule:self.moduleName];
+        }
+        else{
+            NSArray* displayLabels = [ZCRMSettings defaultValueForFieldName:DISPLAY ofModule:self.moduleName];
+            keyValue = [ZCRMDetailControllerUtil getValueForFieldLabel:displayLabels[0] whileEditing:NO withEntity:obj onModule:self.moduleName];
+        }
+        if ([GlobalUtil isEmpty:obj]) {
+            lookupEntityId = STRING_EMPTY;
+            keyValue = STRING_EMPTY;
+        }
+        lookUpDict[KEY_LOOKUP_FIELDID] = lookupFieldLabel;
+        lookUpDict[KEY_LOOKUP_MODULE] = lookupModule;
+        lookUpDict[KEY_LOOKUP_ENTITY_ID] = lookupEntityId;
+        lookUpDict[KEY_LOOKUP_DISPLAY_VALUE] = keyValue;
+    }
+    return lookUpDict;
+}
+
+- (NSDictionary *)getUserLookupDictForUser:(NSDictionary *)userDict {
+    NSString *lookupFieldLabel = ZV_NonNullString(self.fieldLabel);
+    NSString *lookupModule = self.moduleName;
+    NSString *lookupEntityId = [userDict valueForKeyPath:[UserDBConstants userID]];
+    NSString *keyValue = [UserManager getUserFullNameFromUserDetailsOrUserId:userDict userName:STRING_EMPTY];
+    if ([GlobalUtil isEmpty:userDict]) {
+        lookupEntityId = @"";
+        keyValue = @"";
+    }
+
+    NSDictionary *lookUpDict = [NSDictionary dictionaryWithObjectsAndKeys:
+                  lookupEntityId, KEY_LOOKUP_ENTITY_ID,
+                  lookupFieldLabel, KEY_LOOKUP_FIELDID,
+                  lookupModule,KEY_LOOKUP_MODULE,
+                  keyValue, KEY_LOOKUP_DISPLAY_VALUE,nil];
+
+    return lookUpDict;
+}
+
+#pragma mark ---- Search Related Methods Methods ----
+
+
+-(void)removeSearchBar{
+    
+    if (!self.isOfflineSupportAvailable) {
+        
+        [self.navigationController popViewControllerAnimated:YES];
+    }
+    else{
+        self.navigationController.navigationBarHidden = NO;
+    }
+}
+
+- (void)filterContentForSearchText:(NSString*)searchText fromServer:(BOOL)fromServer withCompletionBlock:(void (^)(void))completionHandler
+{
+        self.filteredArray = [NSMutableArray new];
+        NSArray *allRecords = [self.lookUpListArray copy];
+        if(self.isLookupFilterConfigured && ![GlobalUtil isEmpty:self.lFCurrentSearchResults]) {
+#ifndef EXTN
+            [self fetchLFSearchResultRecords:self.lFAllRecords withCompletionBlock:^(NSArray *lFAllRecords) {
+                __weak ZCRMLookUpListViewController *weakSelf = self;
+                weakSelf.lFAllRecords = lFAllRecords;
+                [weakSelf updateFilterdArray:weakSelf.lFAllRecords isFromServer:fromServer withSearchText:searchText];
+                completionHandler();
+            }];
+#endif
+        }
+        else {
+            [self updateFilterdArray:allRecords isFromServer:fromServer withSearchText:searchText];
+            completionHandler();
+        }
+}
+
+#ifndef EXTN
+- (void)fetchLFSearchResultRecords:(NSArray *)lookupFilterAllRecords withCompletionBlock:(void (^)(NSArray *))completionHandler {
+    EXECUTE_CODE_ON_BACKGROUND_THREAD_START
+    NSArray *lookupFilterSearchResultRecords;
+    if (![GlobalUtil isUsersModule:self.moduleName]) {
+        NSString *criteria = [self getAllRecordsfilterCriteria];
+        criteria = [self appendLookupFilterSearchCriteria:criteria searchResults:self.lFCurrentSearchResults];
+        
+        if ([self canIncludeCachedCSCriteria]) {
+            NSString *csCriteria = [NSString stringWithFormat:@"%@ IN (%@)", GlobalUtil.recordId, [cScriptSetCriteriaFilteredRecordIDs componentsJoinedByString:@","]];
+            criteria = [NSString stringWithFormat:@"(%@) AND (%@)", criteria, csCriteria];
+        }
+        NSArray *recordsObj = FetchRecordsForModule(self.moduleName, [self.searchFields copy], [self.displayFields copy], criteria);
+        lookupFilterSearchResultRecords = recordsObj;
+    }
+    else {
+        NSArray *validUserList = [self getValidUsersListWithConfigurationApplied];
+        NSArray *searchResultRecordIds = [self.lFCurrentSearchResults valueForKey:RECORD_ID];
+        NSPredicate *userSearchPredicate = [NSPredicate predicateWithFormat:@"SELF.%@ IN %@", UserDBConstants.id, searchResultRecordIds];
+        lookupFilterSearchResultRecords = [validUserList filteredArrayUsingPredicate:userSearchPredicate];
+    }
+    __block NSArray *lFAllRecords = [ZCRMCommonUtils getUnionOfArrays:lookupFilterAllRecords and:lookupFilterSearchResultRecords];
+    EXECUTE_CODE_ON_UI_THREAD_START
+    if (completionHandler != nil) {
+        completionHandler(lFAllRecords);
+    }
+    EXECUTE_CODE_ON_UI_THREAD_END
+    EXECUTE_CODE_ON_BACKGROUND_THREAD_END
+}
+#endif
+
+- (void)updateFilterdArray:(NSArray *)allRecords isFromServer:(BOOL)fromServer withSearchText:(NSString *)searchText {
+    [self.filteredArray addObjectsFromArray:FilterObjects(allRecords, nil, allRecords.count, searchText, self.searchFields, self.moduleName)];
+    NSSortDescriptor *idSort = [NSSortDescriptor sortDescriptorWithKey:RECORD_ID ascending:false];
+    if (self.filteredArray.firstObject[RECORD_ID] != nil) {
+        [self.filteredArray sortUsingDescriptors:@[idSort]];
+    }
+    if(fromServer && IsUserOwnerModule(self.moduleName) && self.searchBar.text.length == 0){
+        [self updateSearchFooter:@""];
+    }
+    NSString *labelStr = [self searchFooterString:fromServer];
+    [self showSearchFooterLabelWithString:labelStr];
+}
+
+-(NSString*)searchFooterString:(BOOL)fromServer
+{
+    NSString *labelStr;
+
+    if(fromServer){
+        if ([self.filteredArray count] > 0){
+            labelStr = [L10NHelper getString:SEARCH_FOOTER_SHOWINGALLMATCHINGRESULTS];
+        }
+        else {
+            labelStr = [L10NHelper getString:SEARCH_FOOTER_NOMATCHINGRESULTS];
+        }
+    }
+    else{
+        if(![VTNetUtil isNetworkConnectionAvailable]){
+            if ([self.filteredArray count] > 0){
+                labelStr = [L10NHelper getString:SEARCH_FOOTER_SHOWINGALLMATCHINGRESULTSINDEVICEANDNOSERVERSEARCH];
+            }
+            else {
+                labelStr = [L10NHelper getString:SEARCH_FOOTER_NOMATCHINGRESULTSINDEVICEANDNOSERVERSEARCH];
+            }
+            return labelStr;
+        }
+        else{
+            if ([self.filteredArray count] > 0){
+                labelStr = [L10NHelper getString:SEARCH_FOOTER_SHOWINGALLMATCHINGRESULTSINDEVICE];
+            }
+            else {
+                labelStr = [L10NHelper getString:SEARCH_FOOTER_NOMATCHINGRESULTSINDEVICE];
+            }
+        }
+    }
+
+    return labelStr;
+}
+#pragma mark ----server search-----
+-(void)performSearchInServer
+{
+#ifndef EXTN
+        if(self.searchBar.text.length == 0)
+        {
+            EXECUTE_CODE_ON_UI_THREAD_START
+            alertView = [[ZMAlertView alloc]initWithTitle:[L10NHelper getString:SEARCH_LABEL_INVALID] message:[L10NHelper getString:SEARCH_LABEL_PROVIDEVALIDSEARCHTEXT] delegate:self cancelButtonTitle:[L10NHelper getString:UI_LABEL_OK] otherButtonTitles:nil otherButtonsAccessibilityIds:nil alertViewAccessibilityId:AccessibilityConstant.alertView_InvalidTextID];
+            alertView.alertViewTintColor = [CurTheme() themeActionItemColor];
+            [alertView show];
+            self.searchResultContentView.tableFooterView.hidden = YES;
+            EXECUTE_CODE_ON_UI_THREAD_END
+        }
+        else {
+            NSString *searchCriteria = [SearchHelper getAPISearchCriteriaStringFor:self.searchBar.text module:self.moduleName searchFields:self.serverSearchFields isSearchTextSanitized:false showCurrentUserRecordsOnly:false];
+            if ([self canIncludeCSCriteria]) {
+                searchCriteria = [searchCriteria stringByAppendingFormat:@" and %@", self.cScriptSetCriteria[@"apiCriteria"]];
+            }
+            if([GlobalUtil isEmpty:searchCriteria] || (IsUserOwnerModule(self.moduleName) && ![VersionCheck isUserDownloadFlowChangeMigrationCompleted])){
+                NSString *labelStr = [self searchFooterString:NO];
+                [self showSearchFooterLabelWithString:labelStr];
+                return;
+            }
+            if(!self.isLookupFilterConfigured) {
+                if(IsUserOwnerModule(self.moduleName)){
+                    [ZCRMBaseDataDownloader searchUserRecordsWithCriteria:searchCriteria searchWord:self.searchBar.text includeLiteUser: self.showLiteUsers queryId:self.queryId withCompletionHandler:self];
+                }
+                else{
+                    [ZCRMBaseDataDownloader downloadSearchRecordsForModule:self.moduleName searchString:searchCriteria searchWord:self.searchBar.text globalSearch:NO queryId:self.queryId withCompletionHandler:self fromCount:0];
+                }
+            }
+            else {
+                [self.lFRecordsHandler getLookupFilterRecordsFromServerWithModule:self.moduleName moduleAPI:GetModuleAPIName(self.moduleName) queryId:self.queryId serverFetchType:LFRecordsServerFetchTypeSearchRecords criteria:searchCriteria childValues:self.formattedChildValues];
+            }
+        }
+#endif
+}
+
+-(void)downloadRelatedPriceBooks
+{
+#ifdef EXTN
+#else
+    if([VTNetUtil isNetworkConnectionAvailable] && IsValidEntityID(self.entityID))
+    {
+        ZCRMRelatedItemsDownloader *relatedRecordsDownloader = [ZCRMRelatedItemsDownloader instanceForModule:self.moduleName withRequestType:ZCRMServerRequestTypeDownloadRelatedRecords];
+        relatedRecordsDownloader.downloadHandler = self;
+        relatedRecordsDownloader.moduleName = PRODUCTS_MODULE;
+        relatedRecordsDownloader.entityId = self.entityID;
+        NSArray *pbRelatedList = [RelatedListUtil getPriceBooksRelatedListFor:PRODUCTS_MODULE];
+        if (pbRelatedList.count)
+        {
+            NSDictionary *relatedList = pbRelatedList.firstObject;
+            
+            if(!IsValidEntityID(relatedList[ZCOL_MODULE_RELATED_LIST_LIST_ID]) || !IsSupportedActiveOrLinkingModule(relatedList[ZCOL_MODULE_RELATED_LIST_RELATED_MODULE_NAME]))
+            {
+                NSLog(@"Invalid relatedLists Id/relatedModuleName");
+                [self loadLookupView];
+                return;
+            }
+            relatedRecordsDownloader.relatedModuleName = @[relatedList[ZCOL_MODULE_RELATED_LIST_RELATED_MODULE_NAME]];
+            relatedRecordsDownloader.relatedModuleAPIname = @[relatedList[ZCOL_MODULE_RELATED_LIST_RELATED_LIST_API_NAME]];
+            relatedRecordsDownloader.relatedListIds = @[relatedList[ZCOL_MODULE_RELATED_LIST_LIST_ID]];
+        }
+        [relatedRecordsDownloader start];
+    }
+    else{
+        [self loadLookupView];
+    }
+#endif
+}
+
+-(BOOL)isNoResultString:(NSString*)string{
+    return  [string isEqualToString:[L10NHelper getString:SEARCH_FOOTER_NOMATCHINGRESULTS]] ||
+    [string isEqualToString:[L10NHelper getString:SEARCH_FOOTER_NOMATCHINGRESULTSINDEVICE]] ||
+    [string isEqualToString:[L10NHelper getString:SEARCH_FOOTER_SHOWINGALLMATCHINGRESULTSINDEVICEANDNOSERVERSEARCH]];
+}
+
+-(void)showSearchFooterLabelWithString:(NSString*)string
+{
+    EXECUTE_CODE_ON_UI_THREAD_START
+    if(self.searchBar.text.length > 0)
+    {
+        if(IsUserOwnerModule(self.moduleName)) {
+            if(![self.filteredArray count] && [self isNoResultString:string]){
+                [self removeNoDataView:NO];
+                [self addNoDataView];
+                self.noDataLabel.text = string;
+            }
+            else{
+                [self removeNoDataView:NO];
+                [self updateSearchFooter:string];
+            }
+        }
+        else{
+            [self updateSearchFooter:string];
+        }
+    }
+    EXECUTE_CODE_ON_UI_THREAD_END
+}
+
+-(void)updateSearchFooter:(NSString*)footer{
+    self.searchFooterLabel.hidden = NO;
+    self.searchFooterLabel.text = footer;
+}
+
+-(void) scrollViewWillBeginDragging:(UIScrollView *)scrollView {
+#ifndef EXTN
+    if ([self.searchViewController isActive] == false && self.isRefreshAllowed) {
+        [self.refreshControl containerDidBeginDraggingWithView:scrollView];
+    }
+#endif
+}
+
+-(void) scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
+#ifndef EXTN
+    if ([self.searchViewController isActive] == false && self.isRefreshAllowed) {
+        [self.refreshControl containerDidEndDraggingWithView:scrollView];
+    }
+#endif
+}
+
+-(void)scrollViewDidScroll:(UIScrollView *)scrollView {
+#ifndef EXTN
+    if ([self.searchViewController isActive] == false && self.isRefreshAllowed) {
+        [self.refreshControl containerDidScrollWithView:scrollView];
+    }
+#endif
+    if(scrollView == self.searchResultContentView)
+        [self.searchField resignFirstResponder];
+}
+
+-(NSMutableDictionary *)createProductDictWithInventoryProductInfo:(NSDictionary *)manObj
+{
+    NSArray *products = [VTDBHandler fetchDataWithTableName:GetModuleEntityForModuleName(PRODUCTS_MODULE) criteriaColumnValues:@{GlobalUtil.recordId: [manObj valueForKey:KEY_LOOKUP_ENTITY_ID]}];
+    NSDictionary *productEntity = [products.firstObject copy];
+    NSMutableDictionary *crmModuleEntity= [NSMutableDictionary dictionary];
+    [crmModuleEntity setValue:[manObj valueForKey:KEY_LOOKUP_ENTITY_ID] forKey:INVENTORY_MODULE_PRODUCT_ID];
+    [crmModuleEntity setValue:[INVENTORY_LINE_ITEM_ADD_PREFIX stringByAppendingFormat:@"%llu",[GetUniqueIdFromResponseTime() longLongValue]] forKey:INVENTORY_MODULE_PRODUCT_ITEMLINEID];
+    [crmModuleEntity setValue:[manObj valueForKey:KEY_LOOKUP_DISPLAY_VALUE] forKey:INVENTORY_MODULE_PRODUCT_NAME];
+    NSString *unitPrice = productEntity[PRODUCT_UNIT_PRICE];
+    [crmModuleEntity setValue:([GlobalUtil isEmpty:unitPrice] ? @"0" : unitPrice) forKey:INVENTORY_MODULE_PRODUCT_UNIT_PRICE];
+    [crmModuleEntity setValue:productEntity[PRODUCT_QTY_IN_STOCK] forKey:INVENTORY_MODULE_PRODUCT_QUANTITY_IN_STOCK];
+    [crmModuleEntity setValue:productEntity[PRODUCT_DESCRIPTION] forKey:INVENTORY_MODULE_PRODUCT_DESCRIPTION];
+        
+    
+#ifndef EXTN
+    NSArray *productTaxes = [productEntity[PRODUCT_TAX] componentsSeparatedByString:STRING_SEMICOLON];
+    if(IsProductTaxAutoPopulate() && ![GlobalUtil isEmpty:productTaxes] && IsValueTrue(productEntity[PRODUCT_TAXABLE])){
+
+        NSArray *filtered = [ZCRMCommonUtils getProductTaxRates:productTaxes withOrgTaxes:[ZCRMDetailControllerUtil getProductTaxRates]];
+        if(![GlobalUtil isEmpty:filtered]){
+            crmModuleEntity[INVENTORY_MODULE_PRODUCT_LINE_TAX] =  [GlobalUtil convertJsonToStringDecimal: [ZCRMCommonUtils convertOrgTaxesToLineTaxes:filtered withTotal:productEntity[PRODUCT_UNIT_PRICE]]];
+        }
+    }
+#endif
+    
+    return crmModuleEntity;
+}
+
+
+-(void)taskDidCompleteWithInformation:(VTTaskResult *)info
+{
+#ifdef EXTN
+#else
+    ZCRMGenericParserResponse *response = [[info resultData]firstObject];
+    switch (info.taskType)
+    {
+        case ZCRMServerRequestTypeDownloadRelatedRecords:
+        {
+            [self loadLookupView];
+        }
+            break;
+        case ZCRMServerRequestTypeSearchRecords:
+        case ZCRMServerRequestTypeSearchLookupFilterRecords:
+        {
+            EXECUTE_CODE_ON_BACKGROUND_THREAD_START
+            if(([response.recordsArray count] > 0) && [self.fieldLabel isEqualToString:CONTACT_REPORTING_TO_CONTACT_ID])
+            {
+                NSPredicate *firstPredicate = [NSPredicate predicateWithFormat:@"NOT %K IN  %@",self.metaData.primaryFieldLabel,self.entityID];
+                NSPredicate *secondPredicate = [NSPredicate predicateWithFormat:@"%K like %@",CONTACT_ACCOUNTID,self.relatedRecordID];
+                NSPredicate *reportingContactsPredicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[firstPredicate,secondPredicate]];
+                response.recordsArray = [response.recordsArray filteredArrayUsingPredicate:reportingContactsPredicate];
+            }
+            response.recordsArray = [self filterReviewProcessRecords:response.recordsArray];
+            if ([response.recordsArray count] > 0)
+            {
+                if(IsUserOwnerModule(self.moduleName)){
+                    [UserManager reset];
+                }
+                self.lFCurrentSearchResults = response.recordsArray;
+                [self setLookupArray];
+                EXECUTE_CODE_ON_UI_THREAD_START
+                if ([self.searchViewController isActive])
+                {
+                    [self filterContentForSearchText:self.searchText fromServer:YES withCompletionBlock:^ {
+                        [self changeNoDataText:@""];
+                        [self fetchDidCompleted];
+                    }];
+                }
+                else {
+                    [self fetchDidCompleted];
+                }
+                EXECUTE_CODE_ON_UI_THREAD_END
+            }
+            else
+            {
+                [self showSearchFooterLabelWithString:[self searchFooterString:YES]];
+                EXECUTE_CODE_ON_UI_THREAD_START
+                [self.zTableView reloadData];
+                EXECUTE_CODE_ON_UI_THREAD_END
+            }
+            EXECUTE_CODE_ON_BACKGROUND_THREAD_END
+        }
+            break;
+        case ZCRMServerRequestTypeDownloadRecords:
+        {
+            [self loadLookupData];
+            [self removeToast];
+        }
+            break;
+        case ZCRMServerRequestTypeSyncRecords:
+        {
+            [self loadLookupData];
+        }
+            break;
+        case ZCRMServerRequestTypeActiveUsers:{
+            [self loadLookupData];
+            self.isMoreUserDownloadInProgress = NO;
+        }
+            break;
+        case ZCRMServerRequestTypeDownloadLookupFilterRecords: {
+            if ([GlobalUtil isNotEmpty:self.queryId]) {
+                [self updateLFCache:response.recordsArray];
+            } else if ([GlobalUtil isNotEmpty:self.cScriptSetCriteria]) {
+                cScriptSetCriteriaFilteredRecordIDs = [response.recordsArray valueForKey:RECORD_ID] ;
+            }
+            [self loadLookupData];
+        }
+        default:
+            break;
+    }
+#endif
+}
+
+-(void)taskDidFailWithInformation:(VTTaskError *)errorInfo
+{
+#ifdef EXTN
+#else
+    if(errorInfo.taskType == ZCRMServerRequestTypeSyncRecords)
+    {
+        [self loadLookupData];
+    }
+    else if(errorInfo.taskType == ZCRMServerRequestTypeDownloadRelatedRecords){
+        [self loadLookupView];
+    }
+    else if(errorInfo.taskType == ZCRMServerRequestTypeDownloadLookupFilterRecords) {
+        [self handleLookupFilterError:errorInfo completionHandler:^(BOOL loadLocalData){
+            if(loadLocalData == true) {
+                [self loadLookupData];
+            }
+            else {
+                [self.navigationController popViewControllerAnimated:YES];
+            }
+        }];
+    }
+    else if(errorInfo.taskType == ZCRMServerRequestTypeSearchRecords || errorInfo.taskType == ZCRMServerRequestTypeSearchLookupFilterRecords){
+        [self showSearchFooterLabelWithString:[L10NHelper getString:SEARCH_FOOTER_NOMATCHINGRESULTS]];
+        EXECUTE_CODE_ON_UI_THREAD_START
+        [self.zTableView reloadData];
+        EXECUTE_CODE_ON_UI_THREAD_END
+    }
+    else if(errorInfo.taskType == ZCRMServerRequestTypeDownloadRecords) {
+        [self removeToast];
+    }
+    else if(errorInfo.taskType == ZCRMServerRequestTypeActiveUsers){
+        self.isMoreUserDownloadInProgress = NO;
+    }
+    [VTNetError handleError:errorInfo];
+    
+    DLog(@"%@",errorInfo.errorData);
+#endif
+}
+
+-(BOOL)isOfflineSupportAvailable{//to be changed
+    
+    if (/*[[ZCRMModulesHandler getActiveModules] containsObject:self.moduleName] */[ZCRM_SUPPORTED_MODULES containsObject:self.moduleName]) {
+        
+        return YES;
+    }
+    else if (IsOwnersModule(self.moduleName))
+    {
+        return YES;
+    }
+    else{
+        return NO;
+    }
+}
+
+-(BOOL)searchBarShouldBeginEditing:(UISearchBar *)searchBar
+{
+#ifndef EXTN
+    if(self.refreshControl.isRefreshing) {
+        return false;
+    }
+#endif
+    if ([GlobalUtil isEmpty:self.searchText]) {
+        self.filteredArray = nil;
+        self.lookUpListArrayCopy = self.lookUpListArray;
+        [self.zTableView reloadData];
+    }
+    return YES;
+}
+
+-(void)searchBarCancelButtonClicked:(UISearchBar *)searchBar
+{
+    if(searchBar == self.searchBar)
+    {
+        self.filteredArray = nil;
+        self.searchText = nil;
+        isSearchClicked = NO;
+        [self removeNoDataView:NO];
+        self.lookUpListArray = self.lookUpListArrayCopy;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self setTableFooterView];
+            if([self.lookUpListArray count] == 0) {
+                [self addNoDataView];
+            }
+        });
+        [self.zTableView reloadData];
+    }
+}
+
+-(void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText
+{
+    if ([GlobalUtil isEmpty:searchText])
+    {
+        self.filteredArray = nil;
+        [self removeNoDataView:YES];
+        [self.zTableView reloadData];
+    }
+}
+
+-(void) checkAndPerformServerSearch:(NSString *)searchWord
+{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self.filteredArray.count < 1 && [searchWord isEqualToString:self.searchText])
+            {
+                [self serverSearch];
+            }
+        });
+}
+
+-(void)searchBarSearchButtonClicked:(UISearchBar *)searchBar
+{
+    isSearchClicked = YES;
+    [self serverSearch];
+}
+
+-(void)changeNoDataText:(NSString *)text
+{
+    if (!noResultsLabel)
+    {
+        /*
+        for (id subview in self.searchViewController.searchResultsTableView.subviews)
+        {
+            if ([subview isKindOfClass:[UILabel class]] && subview != self.footerLabel)
+            {
+                noResultsLabel = subview;
+            }
+        }
+         */
+    }
+    if (noResultsLabel != nil)
+    {
+        noResultsLabel.text = text;
+    }
+}
+
+-(void) syncRecordsFromServer{
+#ifdef EXTN
+    [self loadLookupData];
+    [self handleErrorToastOnNetworkFailureForShareExtension];
+#else
+    if([VTNetUtil isNetworkConnectionAvailable] && !IsCampaignsModule(self.moduleName))
+    {
+        BOOL initialDownloadComplete = [ZCRMRecordsData isDataDownloadedFor:self.moduleName];
+        if (!initialDownloadComplete) {
+            [ZCRMBaseDataDownloader downloadRecordsForModule:self.moduleName requestType:ZCRMServerRequestTypeDownloadRecords withCompletionHandler:self];
+        } else {
+            [ZCRMBaseDataDownloader downloadSyncRecordsForModule:self.moduleName withCompletionHandler:self];
+        }
+    }
+    else{
+        [self loadLookupData];
+    }
+#endif
+}
+
+- (void)getLookupFilterRecordsFromServer {
+#ifndef EXTN
+    NSString *criteria = nil;
+    LFRecordsServerFetchType fetchType = LFRecordsServerFetchTypeGetRecords;
+    if([self.fieldLabel isEqualToString:CONTACT_REPORTING_TO_CONTACT_ID]) {
+        if([[ZCRMAppData activeModules] containsObject:ACCOUNTS_MODULE]) {
+            ZCRMMetadata *accountsMetadata = [ZCRMMetadata instanceForModule:ACCOUNTS_MODULE];
+            NSString *fieldAPIName = [accountsMetadata fieldAPINameForCRMColumnName:ACCOUNT_ACCOUNT_NAME];
+            criteria = [NSString stringWithFormat:@"%@:equals:%@", fieldAPIName, self.relatedRecordID];
+            fetchType = LFRecordsServerFetchTypeGetRecordsWithCriteria;
+        }
+    }
+    else if([GlobalUtil isProductsModule:self.moduleName] && [self.fieldLabel isEqualToString:INVENTORY_LINE_ITEM_PRODUCT_ID] && [self.metaData isFieldAvailable:PRODUCT_ACTIVE]) {
+        NSString *fieldAPIName = [self.metaData fieldAPINameForCRMColumnName:PRODUCT_ACTIVE];
+        criteria = [NSString stringWithFormat:@"%@:equals:true", fieldAPIName];
+        fetchType = LFRecordsServerFetchTypeGetRecordsWithCriteria;
+    }
+    if ([self canIncludeCSCriteria]) {
+        if ([GlobalUtil isEmpty:criteria]) {
+            criteria = [NSString stringWithFormat:@"%@", self.cScriptSetCriteria[@"apiCriteria"]];
+            fetchType = LFRecordsServerFetchTypeGetRecordsWithCriteria;
+        } else {
+            criteria = [NSString stringWithFormat:@"(%@)and%@", criteria, self.cScriptSetCriteria[@"apiCriteria"]];
+        }
+    }
+    [self.lFRecordsHandler getLookupFilterRecordsFromServerWithModule:self.moduleName moduleAPI:GetModuleAPIName(self.moduleName) queryId:self.queryId serverFetchType:fetchType criteria:criteria childValues:self.formattedChildValues];
+#endif
+}
+
+-(void) startInitialDownloadForCampaignsModule
+{
+#ifdef EXTN
+#else
+    [ZCRMBaseDataDownloader downloadRecordsForModule:self.moduleName requestType:ZCRMServerRequestTypeDownloadRecords withCompletionHandler:self];
+#endif
+}
+
+-(void)dealloc
+{
+    [ZNotificationCenter removeObserver:self];
+    DLog(@"Deallocing lookup list view");
+}
+
+-(NSString*)getFullNameForModuleObj:(NSDictionary*)moduleObj moduleName:(NSString*)moduleName
+{
+    NSString* fieldLabel;
+    NSArray *fieldLabels = [ZCRMSettings defaultValueForFieldName:SEARCH ofModule:moduleName];
+    for(NSString *availableFieldLabel in fieldLabels)
+    {
+        if([self.metaData isFieldAvailable:availableFieldLabel])
+        {
+            fieldLabel = availableFieldLabel;
+            break;
+        }
+    }
+    
+    NSString* fnLabel = nil;
+    NSString* lnLabel = nil;
+    
+    DefaultNameSettingsType nameOrdering = [ZCRMSettings displayNameOrder];
+    
+    if (IsLeadsModule(moduleName))
+    {
+        switch (nameOrdering)
+        {
+            case LastName_FirstName:
+                fnLabel = LEAD_LAST_NAME;
+                lnLabel = LEAD_FIRST_NAME;
+                break;
+                
+            default:
+                fnLabel = LEAD_FIRST_NAME;
+                lnLabel = LEAD_LAST_NAME;
+                break;
+        }
+        
+    }
+    else if (IsContactsModule(moduleName))
+    {
+        switch (nameOrdering)
+        {
+            case LastName_FirstName:
+                fnLabel = CONTACT_LAST_NAME;
+                lnLabel = CONTACT_FIRST_NAME;
+                break;
+                
+            default:
+                fnLabel = CONTACT_FIRST_NAME;
+                lnLabel = CONTACT_LAST_NAME;
+                break;
+        }
+    }
+    else
+    {
+        return moduleObj[fieldLabel];
+    }
+    NSString* firstname = nil;
+    if (fnLabel)
+    {
+        firstname = moduleObj[fnLabel];
+    }
+    NSString* lastname = nil;
+    if (lnLabel)
+    {
+        lastname = moduleObj[lnLabel];
+    }
+    
+    if(![GlobalUtil isEmpty:firstname] && ![GlobalUtil isEmpty:lastname])
+    {
+        return [NSString stringWithFormat:@"%@ %@",firstname, lastname];
+    }
+    else if (![GlobalUtil isEmpty:firstname])
+    {
+        return firstname;
+    }
+    else if(![GlobalUtil isEmpty:lastname])
+    {
+        return lastname;
+    }
+    return nil;
+  
+}
+
+-(void)showChangeOwnerViewController{
+#ifdef EXTN
+#else
+    NSDictionary *toOwnerInfo = [self getUserInfoForUserId:self.idOfObjectToBeSelected];
+    NSDictionary *lookupDict = [self lookUpDictForObject:toOwnerInfo];
+
+    ChangeOwnerViewController *ownerViewController = [[ChangeOwnerViewController alloc] initFromOwner:self.currOwnerInfo toOwner: toOwnerInfo lookupDict: lookupDict delegate:self.delegate moduleName:self.parentModuleName entityId:self.entityID userListDelegate:self];
+    ownerViewController.isStateRestorationSupported = self.isStateRestorationSupported;
+    UINavigationController *navigationController = [[UINavigationController alloc]initWithRootViewController:ownerViewController];
+    if(isCurrentDeviceTypeiPad()){
+        [navigationController setModalPresentationStyle:UIModalPresentationFormSheet];
+        [navigationController setModalInPresentation:YES];
+    }
+    else{
+        [navigationController setModalPresentationStyle:UIModalPresentationFullScreen];
+    }
+    [self presentViewController:navigationController animated:YES completion:nil];
+#endif
+}
+
+-(NSDictionary*) getUserInfoForUserId:(NSString*)userId{
+    NSPredicate *predicate = [NSPredicate predicateWithFormat:@"%K = %@",[UserDBConstants userID],userId];
+    NSArray *filteredArray = [self.lookUpListArray filteredArrayUsingPredicate:predicate];
+    return filteredArray.firstObject;
+}
+
+-(void) cancelButtonClicked {
+#ifndef EXTN
+    if (self.isChangeOwner) {
+        [StateRestorationUtil removeLastState];
+    }
+#endif
+    if([self.searchViewController isActive]){
+        [self.searchViewController dismissViewControllerAnimated:YES completion:^{
+             [self dismissViewControllerAnimated:YES completion:nil];
+        }];
+    }
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+-(BOOL)toShowAllUsers:(ZCRMModule *)moduleInfo{
+    return [GlobalUtil isUsersModule:self.moduleName] || !self.parentModuleName || [GlobalUtil isEmpty:moduleInfo.profileIds] || IsTeamModule(self.parentModuleName);
+}
+
+-(NSArray*)getValidUsersListWithConfigurationApplied {
+    NSArray *validUserList = [self getValidUsersList];
+    if(self.isLookupFilterConfigured && [GlobalUtil isNotEmpty:self.queryId]) {
+        NSPredicate *lfPredicate = [self getLFUserPredicate];
+        return [validUserList filteredArrayUsingPredicate:lfPredicate];
+    }
+    else {
+        return validUserList;
+    }
+}
+-(NSArray*)getValidUsersList{
+    NSString *criteria = nil;
+    
+    if ([self canIncludeCachedCSCriteria]) {
+        criteria =[NSString stringWithFormat:@"%@ IN (%@)", GlobalUtil.recordId, [cScriptSetCriteriaFilteredRecordIDs componentsJoinedByString:@","]];
+    }
+    
+    BOOL onlyConfirmedUsers = self.showOnlyConfirmedUsers ? true : false;
+    NSArray *users = [UserManager.shared getUsersWithOnlyActiveUsers:true onlyConfirmedUsers:onlyConfirmedUsers fetchCriteria:criteria];
+    
+    ZCRMModule *moduleInfo = [ZCRMModuleManager moduleInstanceForModuleName:self.parentModuleName];
+    if([self toShowAllUsers:moduleInfo]){
+        if(self.showLiteUsers){
+            return users;
+        }
+        return [users filteredArrayUsingPredicate:[self getFilterLiteUserPredicate]];
+    }
+    else {
+        NSPredicate *allowMatchedProfileIdUser = [NSPredicate predicateWithFormat:@"SELF.%@ IN %@",[UserDBConstants profileID], moduleInfo.profileIds];
+        if(self.showLiteUsers){
+            return [users filteredArrayUsingPredicate:allowMatchedProfileIdUser];
+        }
+        NSPredicate *allowNonLiteUser = [self getFilterLiteUserPredicate];
+        NSPredicate *finalPredicate = [NSCompoundPredicate andPredicateWithSubpredicates:@[allowMatchedProfileIdUser, allowNonLiteUser]];
+        return [users filteredArrayUsingPredicate:finalPredicate];
+    }
+}
+
+
+-(NSPredicate *)getFilterLiteUserPredicate {
+    return [NSPredicate predicateWithFormat:@"NOT (SELF.%@ IN %@)", [UserDBConstants profile], @[TEAM_USER_PROFILE, LITE_USER_PROFILE]];
+}
+
+-(NSPredicate *)getLFUserPredicate {
+    NSArray *recordIDs = [self getRecordIdsFromLFCache];
+    return [NSPredicate predicateWithFormat:@"SELF.%@ IN %@", UserDBConstants.id, recordIDs];
+}
+
+//MARK: Related records related
+
+-(void) checkForRelatedRecordsAndReloadTable
+{
+    isRelatedRecordsLinkReqd = [self isRelatedRecordsLinkReqd];
+    self.lookUpListArray = [self getResortedLookupListArrayFrom:self.lookUpListArray];
+    [self fetchDidCompleted];
+}
+
+-(BOOL) isRelatedRecordsLinkReqd
+{
+#ifndef EXTN
+    NSString *crmColumn = [self.metaData fieldLabelForLookUpFieldLabel:self.relatedField];
+    return (![GlobalUtil isEmpty:self.relatedField] && [self.metaData isFieldAvailable:crmColumn] && ![GlobalUtil isEmpty:self.relatedRecordID] && [[ZCRMAppData activeModules] containsObject:ACCOUNTS_MODULE]  && !self.isMultipleAssociatedLookup && ![self.fieldLabel isEqualToString:CONTACT_REPORTING_TO_CONTACT_ID]);
+#else
+        return NO;
+#endif
+}
+
+-(void)setRelatedAndSelectedRecords
+{
+    // Selected Records
+    NSString *primaryKey = GlobalUtil.recordId;
+    if (IsUserOwnerModule(self.moduleName))  {
+        primaryKey = [UserDBConstants userID];
+    }
+    
+    if([[self.lookUpListArray valueForKey:primaryKey] containsObject:self.idOfObjectToBeSelected])
+    {
+        self.selectedListArray = [self.lookUpListArray filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"%K = %@",primaryKey,self.idOfObjectToBeSelected]];
+    }
+    else  {
+        self.selectedListArray = nil;
+    }
+    
+    //Related Records
+    
+    if (isRelatedRecordsLinkReqd) {
+        NSString *criteria = [NSString stringWithFormat:@"%@ = '%@'",self.relatedField,self.relatedRecordID];
+        NSArray *recordsObj = FetchRecordsForModule(self.moduleName, [self.searchFields copy], [self.displayFields copy], criteria);
+        if(recordsObj.count) // related records will be displayed in the beginning
+        {
+            self.relatedRecordsArray = recordsObj;
+        }
+    }
+}
+
+-(NSArray *)getResortedLookupListArrayFrom:(NSArray*)lookupArray // If there are related records , selected records -> it shud be shown first
+{
+    [self setRelatedAndSelectedRecords];
+    
+    NSArray *lookupIDs = [lookupArray valueForKey:RECORD_ID];
+    NSPredicate *relatedRecordsPredicate = [NSPredicate predicateWithFormat:@"%@ IN %@", RECORD_ID, lookupIDs];
+    NSArray *filteredRelatedRecords = [self.relatedRecordsArray filteredArrayUsingPredicate:relatedRecordsPredicate];
+
+    NSMutableArray *remainingLookupListArray = [[NSMutableArray alloc] initWithArray:lookupArray];
+    [remainingLookupListArray removeObjectsInArray:self.selectedListArray]; // Removing selected from total
+    [remainingLookupListArray removeObjectsInArray:filteredRelatedRecords];  // Removing related from total
+    
+    NSMutableArray *remainingRelatedRecordsArray = [[NSMutableArray alloc] initWithArray:filteredRelatedRecords];
+    [remainingRelatedRecordsArray removeObjectsInArray:self.selectedListArray];  // Removing selected from related
+    
+    NSMutableArray *finalSortedArry = [NSMutableArray new];
+    [finalSortedArry addObjectsFromArray:self.selectedListArray];
+    [finalSortedArry addObjectsFromArray:remainingRelatedRecordsArray];
+    [finalSortedArry addObjectsFromArray:remainingLookupListArray];
+    
+    return finalSortedArry;
+}
+
+-(BOOL) canShowNoneOption
+{
+    return (self.isNoneOptionRequired && ![self.searchViewController isActive] && self.lookUpListArray.count != 0);
+}
+
+/*
+#pragma mark - FOL Related
+
+-(BOOL)checkAndHandleUnsyncedRecordSelection:(NSString*)selectedRecordID withRecordObject:(NSDictionary*)manObj{
+#ifdef EXTN
+    return false;
+#else
+    if ([GlobalUtil isUsersModule:self.moduleName] || IsOwnersModule(self.moduleName) || IsCampaignsModule(self.moduleName)) {
+        return false;
+    }
+    if (![GlobalUtil isUnsyncedRecordWithEntityID:selectedRecordID moduleName:self.moduleName]) {
+        return false;
+    }
+
+    self.idOfObjectToBeSelected = nil;
+    [self.zTableView reloadData];
+
+    if (self.isOnlineForm) {
+        [OnlineLookupUtil showUnsyncedLookupAlertWithOver:self onSyncNow:^{
+            [self showEditFormWithEntityId:selectedRecordID];
+        } onCancel:nil];
+    } else {
+        NSString *unsyncedErrorMessage = [L10NHelper getString:FOL_ALERT_MESSAGE_UNSYNCEDLOOKUPRECORDSELECTION placeHolders:@[GetSingularModuleDisplayName(self.moduleName), manObj[KEY_LOOKUP_DISPLAY_VALUE]]];
+        NSString *accessibilityId = AccessibilityConstant.alertView_FOL_UnsyncedLookupRecordSelectionID;
+        if (self.isLookupFilterConfigured) {
+            unsyncedErrorMessage = [L10NHelper getString:SLF_MESSAGE_UNSYNCLOOKUPSELECTION placeHolders:@[GetSingularModuleDisplayName(self.moduleName)]];
+            accessibilityId = AccessibilityConstant.alertView_SLF_UnsyncedLookupRecordSelectionID;
+        }
+        ShowAlertViewWithMessageAndTitle(unsyncedErrorMessage, nil, accessibilityId);
+    }
+    return true;
+#endif
+}
+*/
+#pragma-mark - Keyboard notifications
+-(void) keyboardDidShow:(NSNotification*)aNotification
+{
+#ifndef EXTN
+    float keyboardHeightInset = [ZCRMWorkerClass getKeyboardHeight:aNotification inViewController:self willShow:YES];
+    self.keyboardShowNotification=aNotification;
+    CGFloat keyBoardHeight = keyboardHeightInset;
+     [self adjustTableViewScrollInsets:keyBoardHeight];
+#endif
+}
+
+-(void) keyboardWillHide:(NSNotification *)aNotification
+{
+    [self adjustTableViewScrollInsets:0];
+}
+
+-(void) adjustTableViewScrollInsets:(CGFloat)height
+{
+    UITableView * tableView = self.zTableView;
+    if([tableView isKindOfClass:[UITableView class]])
+    {
+        UIEdgeInsets contentInsets = UIEdgeInsetsMake(tableView.contentInset.top, tableView.contentInset.left, height, tableView.contentInset.right);
+        tableView.contentInset = contentInsets;
+        UIEdgeInsets indicatorInset = UIEdgeInsetsMake(tableView.scrollIndicatorInsets.top, tableView.scrollIndicatorInsets.left, height,tableView.scrollIndicatorInsets.right);
+        tableView.scrollIndicatorInsets = indicatorInset;
+    }
+}
+
+-(void)downloadMoreUsers{
+#ifndef EXTN
+    if([ZCRMAppData isAllUsersDownloaded] || self.isMoreUserDownloadInProgress ||
+       ![VersionCheck isUserDownloadFlowChangeMigrationCompleted]){
+        return;
+    }
+    if(![VTNetUtil isNetworkConnectionAvailable]){
+        NSString *text = [L10NHelper getString:LOOKUP_FOOTER_TOTALUSERSDOWNLOADEDCOUNTANDCANNOTDOWNLOADOFFLINE placeHolders:@[[NSString stringWithFormat:@"%ld",[self.lookUpListArray count]]]];
+        [self setTableFooterText:text];
+        return;
+    }
+    [self setTableFooterText:[L10NHelper getString:LOOKUP_FOOTER_DOWNLOADINGFROMSERVER]];
+    self.isMoreUserDownloadInProgress = YES;
+    EXECUTE_CODE_ON_BACKGROUND_THREAD_START
+    UsersDownloader *usersDownloader = [UsersDownloader shared];
+    [usersDownloader downloadUsers:[UserManager getServerUserListCount] mCount:0 isPostInitialDownload:YES handler:self];
+    EXECUTE_CODE_ON_BACKGROUND_THREAD_END
+#endif
+}
+
+-(void)setTableFooterText:(NSString*)string{
+    EXECUTE_CODE_ON_UI_THREAD_START
+    CGRect tableFooterFrame = self.tableFooterLabel.frame;
+    NSMutableParagraphStyle *textStyle = [[NSMutableParagraphStyle defaultParagraphStyle] mutableCopy];
+    textStyle.alignment = self.tableFooterLabel.textAlignment;
+    CGRect footerBoundingRect = [string boundingRectWithSize:CGSizeMake(tableFooterFrame.size.width-(2*FooterViewPadding), CGFLOAT_MAX)
+                                                     options:NSStringDrawingUsesLineFragmentOrigin|NSStringDrawingTruncatesLastVisibleLine
+                                                  attributes:@{NSFontAttributeName:self.tableFooterLabel.font,NSParagraphStyleAttributeName:textStyle}
+                                                     context:nil];
+    tableFooterFrame.size.height = MAX(footerBoundingRect.size.height+(3*FooterViewPadding), FooterViewMinHeight);
+    self.tableFooterLabel.frame = tableFooterFrame;
+    self.tableFooterLabel.text = string;
+    [self setVisibilityForFooterView];
+    EXECUTE_CODE_ON_UI_THREAD_END
+}
+
+#pragma mark User DB change notification handlers
+
+-(void) currentUserSeparatorPrefDidChange:(NSNotification *) aNotification
+{
+    VT_EXECUTE_ON_UI_THREAD_START
+    [self.zTableView reloadData];
+    VT_EXECUTE_ON_UI_THREAD_END
+}
+
+#pragma mark Module Meta Refresh notification handler
+
+-(void) moduleMetaDidRefresh:(NSNotification *) aNotification
+{
+    NSDictionary* notificationInfo = aNotification.userInfo;
+    if ([GlobalUtil isEmpty:notificationInfo]) { return; }
+    NSArray* moduleNames = notificationInfo[KEY_MODULE_NAMES];
+    if ([GlobalUtil isEmpty:moduleNames]) { return; }
+    if ([moduleNames containsObject:self.moduleName]) {
+        VT_EXECUTE_ON_UI_THREAD_START
+        [self.zTableView reloadData];
+        VT_EXECUTE_ON_UI_THREAD_END
+    }
+}
+
+- (void) changeOwnerCancelled {
+    self.idOfObjectToBeSelected = self.selectedOwnerId;
+    VT_EXECUTE_ON_UI_THREAD_START
+    [self.zTableView reloadData];
+    VT_EXECUTE_ON_UI_THREAD_END
+}
+
+#pragma mark - Lookup Filter Cache
+
+- (NSArray *)getRecordIdsFromLFCache {
+    return [self.lfCache getIdsWithQueryId:self.queryId childValues:self.formattedChildValues];
+}
+
+- (void)updateLFCache:(NSArray *)records {
+    NSArray *recordIds = [records valueForKey:RECORD_ID];
+    [self.lfCache setIdsWithQueryId:self.queryId childValues:self.formattedChildValues ids:recordIds];
+}
+
+#pragma mark - Refresh
+
+-(void) userDidRefreshed:(UIControl *)refreshControl {
+    if (self.isLookupFilterConfigured) {
+        [self getLookupFilterRecordsFromServer];
+    }
+}
+
+// MARK: Events
+#ifndef EXTN
+-(NSString *)getActionSources {
+    NSMutableArray *actionSources = [NSMutableArray new];
+    if (self.isUnsyncRecordsHandlingRequired) {
+        for (NSNumber *feature in self.unsyncRecordsHandlingRequiredFeatures) {
+            switch ((UnsyncHandlingRequired)feature.integerValue) {
+                case FOL:
+                    [actionSources addObject:@"FOL"];
+                    break;
+                case LookupFilter:
+                    [actionSources addObject:@"SLF"];
+                    break;
+            }
+        }
+    }
+    if (self.isFromBlueprint) {
+        [actionSources addObject:@"BP"];
+    }
+    if (actionSources.count) {
+        return [actionSources componentsJoinedByString:@","];
+    } else {
+        return @"DEFAULT";
+    }
+}
+
+-(void)trackQuickCreateEvent {
+    NSDictionary *additionalDetails = @{OnlineOnlySaveKeys.actionSource: [self getActionSources]};
+    AppEvent *event = [[AppEvent alloc] initWithEventType:EventTypeLookupQuickCreateAccessed additionalDetails:additionalDetails];
+    [StatsUtil trackEventInApptics:event];
+}
+
+-(void)trackQuickCreateRestricted {
+    NSDictionary *additionalDetails = @{OnlineOnlySaveKeys.actionSource: [self getActionSources]};
+    AppEvent *event = [[AppEvent alloc] initWithEventType:EventTypeLookupQuickCreateRestrictedNoNetworkList additionalDetails:additionalDetails];
+    [StatsUtil trackEventInApptics:event];
+}
+
+-(void)trackUnsyncRecordSelected {
+    AppEvent *event = [[AppEvent alloc] initWithEventType:EventTypeLookupUnsyncSelected];
+    [StatsUtil trackEventInApptics:event];
+}
+#endif
+
+-(void)trackIfChangeOwnerEvent {
+    #ifndef EXTN
+    if (self.isChangeOwner) {
+        EventType *eventType = [GlobalUtil isNetworkConnectionAvailable] ? EventTypeChangeOwnerAccessedOnline : EventTypeChangeOwnerAccessedOffline;
+        AppEvent *event = [[AppEvent alloc] initWithEventType:eventType];
+        [StatsUtil trackEventInApptics:event];
+    }
+    #endif
+}
+
+// MARK: State Restoration
+-(void)saveCurrentState {
+#ifndef EXTN
+    if (self.isChangeOwner && self.isStateRestorationSupported) {
+        NSMutableDictionary *obj = [[StateRestorationUtil getCurrentFieldState] mutableCopy];
+        obj[@"selectedId"] = self.idOfObjectToBeSelected;
+        [StateRestorationUtil updateRestorationObjectsWith:obj];
+    }
+#endif
+}
+
+-(void)restoreSavedState {
+#ifndef EXTN
+    if (self.isChangeOwner) {
+        NSDictionary *obj = [StateRestorationUtil getCurrentFieldState];
+        NSString *selectedId = obj[@"selectedId"];
+        if ([GlobalUtil isNotEmpty:selectedId]) {
+            self.idOfObjectToBeSelected = selectedId;
+        }
+    }
+#endif
+}
+
+-(void)restoreNextState {
+#ifndef EXTN
+    if (self.isRestorationCompleted) {
+        return;
+    }
+    NSDictionary *obj = [StateRestorationUtil getNextState];
+    if ([GlobalUtil isEmpty:obj]) {
+        return;
+    }
+    if (self.isChangeOwner) {
+        [self showChangeOwnerViewController]; 
+    } else {
+        NSString *entityId = obj[StateRestorationConstant.recordId];
+        if ([GlobalUtil isRecordYetToSyncWithEntityID:entityId moduleName:self.moduleName]) {
+            if ([OnlineLookupUtil canUpdateRecordWithId:entityId andModuleName:self.moduleName]) {
+                [self showEditFormWithEntityId:entityId];
+            } else {
+                [StateRestorationUtil trackStateRestorationIncomplete];
+                [StateRestorationUtil removeAllStatesAfterCurrentIndex];
+                NSLog(@"Could not restore previous session due to error");
+            }
+        } else {
+            if ([self canShowAddForm]) {
+                [self showAddFormWithId:entityId];
+            } else {
+                [StateRestorationUtil trackStateRestorationIncomplete];
+                [StateRestorationUtil removeAllStatesAfterCurrentIndex];
+                NSLog(@"Could not restore previous session due to error");
+            }
+        }
+    }
+
+#endif
+}
+
+-(void)didTapSyncLookupButton:(UIButton*)button {
+    if (IsUserOwnerModule(self.moduleName)) {
+        return;
+    }
+
+    UITableViewCell *cell = (UITableViewCell *) button.superview.superview;
+    if (!cell) {
+        NSLog(@"LVC: invalid superview");
+        return;
+    }
+
+    NSIndexPath *indexPath = [self.zTableView indexPathForCell:cell];
+    if (!indexPath) {
+        NSLog(@"LVC: invalid cell %@", cell);
+        return;
+    }
+
+    NSDictionary* manObj = [self tableView:self.zTableView selectManObjAtIndexPath:indexPath];
+    NSString *entityId = [manObj valueForKey:GlobalUtil.recordId];
+    [self showEditFormWithEntityId:entityId];
+}
+
+-(void)showEditFormWithEntityId:(NSString *)entityId {
+    [OnlineLookupUtil showLookupEditFormWithId:entityId for:self.moduleName on:self isStateRestorationSupported:self.isStateRestorationSupported];
+}
+
+-(BOOL)canIncludeCSCriteria {
+    if ([GlobalUtil isNotEmpty:self.cScriptSetCriteria]) {
+        if ([self.searchViewController isActive]) {
+            NSString *isFilterOnSearch = self.cScriptSetCriteria[CONSTANT_FILTER_ON_SEARCH];
+            if ([GlobalUtil isNull:isFilterOnSearch] || [isFilterOnSearch isEqual:STRING_TRUE]) {
+                return true;
+            }
+        } else  {
+            return true;
+        }
+    }
+    return false;
+}
+
+-(BOOL)canIncludeCachedCSCriteria {
+    return [self canIncludeCSCriteria] && [GlobalUtil isNotNull:cScriptSetCriteriaFilteredRecordIDs];
+}
+@end
